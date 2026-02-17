@@ -99,6 +99,24 @@ def _run_with_progress(label: str, func, *args, **kwargs):
 # TAB FONKSİYONLARI
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _safe_groupby_sum(df: pd.DataFrame, group_col: str, val_col: str, top_n: int = 10) -> pd.DataFrame:
+    """
+    Kategori dtype sorununu önlemek için güvenli groupby.
+    50k+ satırda observed=True + category dtype boş sonuç dönebilir.
+    Çözüm: group sütununu str'e çevir, sonra groupby yap.
+    """
+    tmp = df[[group_col, val_col]].copy()
+    tmp[group_col] = tmp[group_col].astype(str).str.strip()
+    tmp = tmp[tmp[group_col].notna() & (tmp[group_col] != "") & (tmp[group_col] != "nan") & (tmp[group_col] != "Bilinmiyor")]
+    result = (
+        tmp.groupby(group_col, sort=False)[val_col]
+        .sum()
+        .nlargest(top_n)
+        .reset_index()
+    )
+    return result
+
+
 def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
     """Pazar Genel Bakış sekmesini render eder."""
     try:
@@ -138,46 +156,107 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
 
         st.markdown("---")
         section_title("🔢 Veri Seti İstatistikleri")
+
+        # Satış yıllarını bir kez hesapla
+        sales_yrs = DataPipeline._detect_years(df, "Sales_")
+        lsc = f"Sales_{sales_yrs[-1]}" if sales_yrs else None
+
+        # ── Satır 1: Satış Dağılımı / Şirket Top10 / Molekül Top10 ───────────
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.markdown("**Satış Dağılımı**")
-            sales_yrs = DataPipeline._detect_years(df, "Sales_")
-            if sales_yrs:
-                lsc = f"Sales_{sales_yrs[-1]}"
-                if lsc in df.columns:
-                    st.dataframe(
-                        df[lsc].describe().reset_index()
-                        .rename(columns={"index": "İstatistik", lsc: "Değer"}),
-                        use_container_width=True, hide_index=True,
-                    )
+            st.markdown("**📊 Satış Dağılımı**")
+            if lsc and lsc in df.columns:
+                desc = df[lsc].describe().reset_index()
+                desc.columns = ["İstatistik", "Değer"]
+                desc["Değer"] = desc["Değer"].apply(
+                    lambda v: f"${v:,.0f}" if pd.notna(v) else "—"
+                )
+                st.dataframe(desc, use_container_width=True, hide_index=True)
 
         with c2:
-            st.markdown("**Şirket Bazında Top 10 Satış**")
-            if "Company" in df.columns and sales_yrs:
-                lsc = f"Sales_{sales_yrs[-1]}"
-                if lsc in df.columns:
-                    top_c = (
-                        df.groupby("Company", observed=True)[lsc]
-                        .sum().nlargest(10).reset_index()
+            st.markdown("**🏢 Şirket Bazında Top 10**")
+            if "Company" in df.columns and lsc and lsc in df.columns:
+                top_c = _safe_groupby_sum(df, "Company", lsc, top_n=10)
+                if not top_c.empty:
+                    top_c.columns = ["Şirket", "Satış (Ham)"]
+                    top_c["Satış"] = top_c["Satış (Ham)"].apply(fmt_currency)
+                    st.dataframe(
+                        top_c[["Şirket", "Satış"]],
+                        use_container_width=True, hide_index=True,
                     )
-                    top_c[lsc] = top_c[lsc].apply(fmt_currency)
-                    st.dataframe(top_c, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Şirket verisi bulunamadı.")
 
         with c3:
-            st.markdown("**Molekül Bazında Top 10 Satış**")
-            if "Molecule" in df.columns and sales_yrs:
-                lsc = f"Sales_{sales_yrs[-1]}"
-                if lsc in df.columns:
-                    top_m = (
-                        df.groupby("Molecule", observed=True)[lsc]
-                        .sum().nlargest(10).reset_index()
+            st.markdown("**🧪 Molekül Bazında Top 10**")
+            if "Molecule" in df.columns and lsc and lsc in df.columns:
+                top_m = _safe_groupby_sum(df, "Molecule", lsc, top_n=10)
+                if not top_m.empty:
+                    top_m.columns = ["Molekül", "Satış (Ham)"]
+                    top_m["Satış"] = top_m["Satış (Ham)"].apply(fmt_currency)
+                    st.dataframe(
+                        top_m[["Molekül", "Satış"]],
+                        use_container_width=True, hide_index=True,
                     )
-                    top_m[lsc] = top_m[lsc].apply(fmt_currency)
-                    st.dataframe(top_m, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Molekül verisi bulunamadı.")
+
+        # ── Satır 2: Ülke / Şehir / Sektör Top10 ─────────────────────────────
+        st.markdown("---")
+        section_title("🌍 Coğrafi & Sektör Dağılımı")
+        c4, c5, c6 = st.columns(3)
+
+        with c4:
+            st.markdown("**🌍 Ülke Bazında Top 10**")
+            if "Country" in df.columns and lsc and lsc in df.columns:
+                top_country = _safe_groupby_sum(df, "Country", lsc, top_n=10)
+                if not top_country.empty:
+                    top_country.columns = ["Ülke", "Satış (Ham)"]
+                    top_country["Satış"] = top_country["Satış (Ham)"].apply(fmt_currency)
+                    st.dataframe(
+                        top_country[["Ülke", "Satış"]],
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("Ülke verisi bulunamadı.")
+
+        with c5:
+            # Şehir sütunu varsa göster, yoksa Region göster
+            city_col = next(
+                (c for c in ["City", "Sub_Region", "Region"] if c in df.columns), None
+            )
+            label_map = {"City": "🏙️ Şehir", "Sub_Region": "📍 Alt Bölge", "Region": "🗺️ Bölge"}
+            st.markdown(f"**{label_map.get(city_col, '📍 Bölge')} Bazında Top 10**")
+            if city_col and lsc and lsc in df.columns:
+                top_city = _safe_groupby_sum(df, city_col, lsc, top_n=10)
+                if not top_city.empty:
+                    top_city.columns = [label_map.get(city_col, "Bölge"), "Satış (Ham)"]
+                    top_city["Satış"] = top_city["Satış (Ham)"].apply(fmt_currency)
+                    st.dataframe(
+                        top_city[[label_map.get(city_col, "Bölge"), "Satış"]],
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("Bölge verisi bulunamadı.")
+
+        with c6:
+            st.markdown("**🏥 Sektör Bazında Top 10**")
+            if "Sector" in df.columns and lsc and lsc in df.columns:
+                top_sec = _safe_groupby_sum(df, "Sector", lsc, top_n=10)
+                if not top_sec.empty:
+                    top_sec.columns = ["Sektör", "Satış (Ham)"]
+                    top_sec["Satış"] = top_sec["Satış (Ham)"].apply(fmt_currency)
+                    st.dataframe(
+                        top_sec[["Sektör", "Satış"]],
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("Sektör verisi bulunamadı.")
 
     except Exception as exc:
         st.error(f"❌ Genel Bakış sekmesi hatası: {exc}")
+        st.code(traceback.format_exc())
 
 
 def render_analytics_tab(df: pd.DataFrame) -> None:
