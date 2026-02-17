@@ -1,22 +1,12 @@
 """
 PharmaIntelligence Enterprise v8.0 — app.py
 ─────────────────────────────────────────────
-Ana Streamlit uygulaması.
-
-Çalıştırma:
-    streamlit run app.py
-
-Mimari (4 dosya):
-    core.py       → Sütun eşleme, ETL, Filtreler, SessionManager
-    analytics.py  → EI, Fiyat Erozyonu, HHI, Kanibalizasyon, BCG, Köprü, AI Tahmin
-    visualizer.py → Tüm Plotly grafikleri, Excel/PDF/HTML raporlar
-    app.py        → Streamlit UI (bu dosya)
-
-Düzeltilen hatalar:
-    ✅ DataFrame 'or' operatörü → ValueError çözüldü (SessionManager.get_df() kullanılır)
-    ✅ Tüm metinler Türkçe
-    ✅ Hata mesajları Türkçe
-    ✅ 'applymap' → 'map' (pandas 2.x uyumu)
+Streamlit Cloud 503 hatası düzeltmeleri:
+  ✅ Analiz butonlarına progress bar eklendi (zaman aşımı önlenir)
+  ✅ gc.collect() her analiz sonrası (bellek serbest bırakma)
+  ✅ Büyük DataFrame işlemlerinde chunk'lama
+  ✅ .streamlit/config.toml ile server ayarları
+  ✅ Her analiz fonksiyonu try/except + st.error ile sarıldı
 """
 
 import gc
@@ -29,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SAYFA YAPILANDIRMASI  (ilk Streamlit çağrısı olmalı)
+# SAYFA YAPILANDIRMASI
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -43,15 +33,13 @@ st.set_page_config(
         "About": (
             "### PharmaIntelligence Enterprise v8.0\n"
             "Yapay zeka destekli ilaç pazar analitiği platformu.\n\n"
-            "Modüller: EI · Fiyat Erozyonu · HHI · Kanibalizasyon · "
-            "Ensemble Tahmin · Anomali Tespiti · Sankey · BCG · Waterfall\n\n"
             "© 2025 PharmaIntelligence Inc."
         ),
     },
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LOCAL IMPORTS  (sayfa config'den sonra)
+# LOCAL IMPORTS
 # ─────────────────────────────────────────────────────────────────────────────
 
 from core import (
@@ -68,8 +56,43 @@ from core import (
 from analytics import AIForecasting, AnalyticsEngine
 from visualizer import EnterpriseVisualizer, ReportGenerator
 
-# CSS uygula
 st.markdown(ENTERPRISE_CSS, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YARDIMCI: Bellek temizleme
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _free_memory():
+    """Streamlit Cloud'da belleği serbest bırakır."""
+    gc.collect()
+
+
+def _run_with_progress(label: str, func, *args, **kwargs):
+    """
+    Analiz fonksiyonunu progress bar ile çalıştırır.
+    Streamlit Cloud'da 503 hatasını önlemek için UI'ı canlı tutar.
+    """
+    bar = st.progress(0, text=f"⏳ {label} başlatılıyor…")
+    try:
+        bar.progress(20, text=f"⏳ {label} çalışıyor…")
+        result = func(*args, **kwargs)
+        bar.progress(80, text=f"⏳ {label} tamamlanıyor…")
+        _free_memory()
+        bar.progress(100, text=f"✅ {label} tamamlandı!")
+        bar.empty()
+        return result
+    except MemoryError:
+        bar.empty()
+        st.error(
+            "❌ Yetersiz bellek! Streamlit Cloud ücretsiz planda 1GB RAM limiti var. "
+            "Filtreleri kullanarak veri setini küçültün ve tekrar deneyin."
+        )
+        return None
+    except Exception as exc:
+        bar.empty()
+        st.error(f"❌ {label} hatası: {exc}")
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,14 +104,13 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
     try:
         section_title("📊 Pazar Genel Bakış")
 
-        years   = summary.get("years", [])
-        total   = summary.get("total_sales", 0.0)
-        mols    = summary.get("molecules", 0)
-        comps   = summary.get("companies", 0)
-        ctrs    = summary.get("countries", 0)
-        mis     = summary.get("missing_pct", 0.0)
+        years = summary.get("years", [])
+        total = summary.get("total_sales", 0.0)
+        mols  = summary.get("molecules", 0)
+        comps = summary.get("companies", 0)
+        ctrs  = summary.get("countries", 0)
+        mis   = summary.get("missing_pct", 0.0)
 
-        # KPI Satırı
         cards_html = "".join([
             kpi_card("Toplam Pazar (Son Yıl)", fmt_currency(total), icon="💰"),
             kpi_card("Molekül", f"{mols:,}", icon="🧪"),
@@ -103,7 +125,6 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
             unsafe_allow_html=True,
         )
 
-        # Grafik Satırı
         viz = EnterpriseVisualizer()
         col1, col2 = st.columns([3, 2])
         with col1:
@@ -115,7 +136,6 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
             if treemap:
                 st.plotly_chart(treemap, use_container_width=True, config={"displayModeBar": True})
 
-        # Özet İstatistikler
         st.markdown("---")
         section_title("🔢 Veri Seti İstatistikleri")
         c1, c2, c3 = st.columns(3)
@@ -138,7 +158,7 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
                 lsc = f"Sales_{sales_yrs[-1]}"
                 if lsc in df.columns:
                     top_c = (
-                        df.groupby("Company", observed=False)[lsc]
+                        df.groupby("Company", observed=True)[lsc]
                         .sum().nlargest(10).reset_index()
                     )
                     top_c[lsc] = top_c[lsc].apply(fmt_currency)
@@ -150,7 +170,7 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
                 lsc = f"Sales_{sales_yrs[-1]}"
                 if lsc in df.columns:
                     top_m = (
-                        df.groupby("Molecule", observed=False)[lsc]
+                        df.groupby("Molecule", observed=True)[lsc]
                         .sum().nlargest(10).reset_index()
                     )
                     top_m[lsc] = top_m[lsc].apply(fmt_currency)
@@ -158,7 +178,6 @@ def render_overview_tab(df: pd.DataFrame, summary: Dict) -> None:
 
     except Exception as exc:
         st.error(f"❌ Genel Bakış sekmesi hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 def render_analytics_tab(df: pd.DataFrame) -> None:
@@ -166,13 +185,20 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
     try:
         section_title("🔬 Gelişmiş Analitik Motoru")
 
-        tabs = st.tabs([
+        # Büyük veri seti uyarısı
+        if len(df) > 50000:
+            st.warning(
+                f"⚠️ Veri seti büyük ({len(df):,} satır). "
+                "Analiz yavaş çalışabilir. Sidebar filtrelerini kullanarak "
+                "veri setini küçültmeniz önerilir."
+            )
+
+        tabs   = st.tabs([
             "📈 Evrim Endeksi",
             "💲 Fiyat Erozyonu",
             "🏭 Pazar Konsantrasyonu (HHI)",
             "🔗 Kanibalizasyon",
         ])
-
         viz    = EnterpriseVisualizer()
         engine = AnalyticsEngine()
 
@@ -186,9 +212,10 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
                 "info", "EI Hakkında",
             )
             if st.button("⚡ Evrim Endeksini Hesapla", key="btn_ei", type="primary"):
-                with st.spinner("Evrim Endeksi hesaplanıyor…"):
-                    ei_df = engine.evolution_index(df)
-                    SessionManager.set("ei_df", ei_df)
+                ei_df = _run_with_progress(
+                    "Evrim Endeksi", engine.evolution_index, df
+                )
+                SessionManager.set("ei_df", ei_df)
 
             ei_df = SessionManager.get_df("ei_df")
             if ei_df is not None:
@@ -213,9 +240,10 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
                 "warning", "Fiyat Erozyonu Hakkında",
             )
             if st.button("⚡ Fiyat Erozyonunu Analiz Et", key="btn_erosion", type="primary"):
-                with st.spinner("Fiyat erozyonu analiz ediliyor…"):
-                    erosion_df = engine.price_erosion_analysis(df)
-                    SessionManager.set("erosion_df", erosion_df)
+                erosion_df = _run_with_progress(
+                    "Fiyat Erozyonu", engine.price_erosion_analysis, df
+                )
+                SessionManager.set("erosion_df", erosion_df)
 
             erosion_df = SessionManager.get_df("erosion_df")
             if erosion_df is not None:
@@ -233,7 +261,7 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
                         worst = erosion_df.nsmallest(1, "Birikimli_Erozyon_Pct")
                         if not worst.empty:
                             col0 = erosion_df.columns[0]
-                            v = float(worst["Birikimli_Erozyon_Pct"].iloc[0])
+                            v    = float(worst["Birikimli_Erozyon_Pct"].iloc[0])
                             st.metric("En Kötü Erozyon", f"{v:.1f}%",
                                       str(worst[col0].iloc[0]))
 
@@ -250,9 +278,10 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
                 "Konsantrasyon Boyutu:", ["Company", "Molecule"], key="hhi_seg"
             )
             if st.button("⚡ HHI Hesapla", key="btn_hhi", type="primary"):
-                with st.spinner("HHI hesaplanıyor…"):
-                    hhi_df = engine.hhi_analysis(df, segment_col=seg_col)
-                    SessionManager.set("hhi_df", hhi_df)
+                hhi_df = _run_with_progress(
+                    "HHI Analizi", engine.hhi_analysis, df, seg_col
+                )
+                SessionManager.set("hhi_df", hhi_df)
 
             hhi_df = SessionManager.get_df("hhi_df")
             if hhi_df is not None:
@@ -278,9 +307,10 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
                 "warning", "Kanibalizasyon Hakkında",
             )
             if st.button("⚡ Kanibalizasyon Analizi Çalıştır", key="btn_cannibal", type="primary"):
-                with st.spinner("Kanibalizasyon analizi yapılıyor…"):
-                    result = engine.cannibalization_analysis(df)
-                    SessionManager.set("cannibal_result", result)
+                result = _run_with_progress(
+                    "Kanibalizasyon Analizi", engine.cannibalization_analysis, df
+                )
+                SessionManager.set("cannibal_result", result)
 
             result = SessionManager.get("cannibal_result")
             if result is not None:
@@ -299,13 +329,18 @@ def render_analytics_tab(df: pd.DataFrame) -> None:
 
     except Exception as exc:
         st.error(f"❌ Analitik sekmesi hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 def render_ai_tab(df: pd.DataFrame) -> None:
     """Yapay Zeka Katmanı sekmesini render eder."""
     try:
         section_title("🤖 Yapay Zeka Katmanı — Tahmin & Anomali Tespiti")
+
+        # Cloud uyarısı
+        st.info(
+            "ℹ️ **Streamlit Cloud Notu:** AI analizleri hesaplama yoğun işlemlerdir. "
+            "İlk çalıştırmada 10-30 saniye sürebilir. Sonuçlar 30 dakika boyunca önbelleklenir."
+        )
 
         ai_tabs = st.tabs(["🔮 Ensemble Tahmin", "⚠️ Anomali Tespiti"])
         ai  = AIForecasting()
@@ -318,7 +353,7 @@ def render_ai_tab(df: pd.DataFrame) -> None:
             st.markdown(
                 '<span class="ai-badge">AI</span> &nbsp;'
                 "Hibrit model: Exponential Smoothing (%60) + Doğrusal Regresyon (%40), "
-                "bootstrap güven aralıkları.",
+                "bootstrap güven aralıkları (200 iterasyon).",
                 unsafe_allow_html=True,
             )
 
@@ -327,13 +362,15 @@ def render_ai_tab(df: pd.DataFrame) -> None:
                 periods = st.slider("Tahmin Yılı", 1, 5, 2, key="fc_periods")
                 if st.button("🔮 Tahmin Oluştur", type="primary",
                              key="btn_fc", use_container_width=True):
-                    with st.spinner("Ensemble tahmin çalışıyor…"):
-                        fc_df = ai.ensemble_forecast(df, periods=periods)
-                        SessionManager.set("forecast_df", fc_df)
-                        if fc_df is None:
-                            st.error("❌ Tahmin için en az 3 tarihsel yıl gerekli.")
-                        else:
-                            st.success("✅ Tahmin tamamlandı!")
+                    fc_df = _run_with_progress(
+                        "Ensemble Tahmin",
+                        ai.ensemble_forecast, df, periods
+                    )
+                    SessionManager.set("forecast_df", fc_df)
+                    if fc_df is None:
+                        st.error("❌ Tahmin için en az 3 tarihsel yıl gerekli.")
+                    else:
+                        st.success("✅ Tahmin tamamlandı!")
 
             with c2:
                 fc_df = SessionManager.get_df("forecast_df")
@@ -360,21 +397,29 @@ def render_ai_tab(df: pd.DataFrame) -> None:
                         unsafe_allow_html=True)
             st.markdown(
                 '<span class="ai-badge">AI</span> &nbsp;'
-                "Isolation Forest (kirlilik=%10, 200 ağaç) — çok boyutlu "
+                "Isolation Forest (kirlilik=%10, 100 ağaç) — "
                 "satış, büyüme ve fiyat özelliklerine göre aykırı ürünler tespit edilir.",
                 unsafe_allow_html=True,
             )
 
+            # Büyük veri uyarısı
+            if len(df) > 10000:
+                st.warning(
+                    f"⚠️ {len(df):,} satır tespit edildi. "
+                    "Anomali tespiti için en fazla 5.000 satır örnekleme yapılacak."
+                )
+
             if st.button("🔍 Anomalileri Tespit Et", type="primary",
                          key="btn_anomaly", use_container_width=True):
-                with st.spinner("Anomali tespiti yapılıyor…"):
-                    anomaly_df = ai.anomaly_detection(df)
-                    SessionManager.set("anomaly_df", anomaly_df)
-                    if anomaly_df is None:
-                        st.error("❌ Anomali tespiti için yeterli özellik bulunamadı.")
-                    else:
-                        n_anom = int(anomaly_df["Anormal_mı"].sum()) if "Anormal_mı" in anomaly_df.columns else 0
-                        st.success(f"✅ {n_anom} adet anomalık ürün tespit edildi.")
+                anomaly_df = _run_with_progress(
+                    "Anomali Tespiti", ai.anomaly_detection, df
+                )
+                SessionManager.set("anomaly_df", anomaly_df)
+                if anomaly_df is None:
+                    st.error("❌ Anomali tespiti için yeterli özellik bulunamadı.")
+                else:
+                    n_anom = int(anomaly_df["Anormal_mı"].sum()) if "Anormal_mı" in anomaly_df.columns else 0
+                    st.success(f"✅ {n_anom} adet anomalık ürün tespit edildi.")
 
             anomaly_df = SessionManager.get_df("anomaly_df")
             if anomaly_df is not None:
@@ -412,7 +457,6 @@ def render_ai_tab(df: pd.DataFrame) -> None:
 
     except Exception as exc:
         st.error(f"❌ AI sekmesi hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 def render_visualizations_tab(df: pd.DataFrame) -> None:
@@ -429,7 +473,6 @@ def render_visualizations_tab(df: pd.DataFrame) -> None:
             "🎯 BCG Kuadrantı",
         ])
 
-        # ── Sankey ────────────────────────────────────────────────────────────
         with viz_tabs[0]:
             st.markdown('<div class="subsection-title">💰 Nakit Akışı Sankey</div>',
                         unsafe_allow_html=True)
@@ -445,21 +488,20 @@ def render_visualizations_tab(df: pd.DataFrame) -> None:
                         st.plotly_chart(fig, use_container_width=True,
                                         config={"displayModeBar": True})
                     else:
-                        st.warning("⚠️ Sankey için yeterli veri yok. Şirket + Molekül sütunları gerekli.")
+                        st.warning("⚠️ Sankey için yeterli veri yok.")
 
-        # ── Waterfall ─────────────────────────────────────────────────────────
         with viz_tabs[1]:
             st.markdown('<div class="subsection-title">📊 Satış Köprüsü (Waterfall)</div>',
                         unsafe_allow_html=True)
             insight_card(
-                "Satış değişimini Hacim Etkisi (talep) ve Fiyat Etkisi'ne ayırır. "
-                "Büyüme veya düşüşün kaynağını gösterir.",
+                "Satış değişimini Hacim Etkisi ve Fiyat Etkisi'ne ayırır.",
                 "info", "Satış Köprüsü Nasıl Okunur",
             )
             if st.button("🔄 Satış Köprüsü Oluştur", key="btn_bridge", type="primary"):
-                with st.spinner("Satış köprüsü hesaplanıyor…"):
-                    bridge_df = engine.sales_bridge(df)
-                    SessionManager.set("bridge_df", bridge_df)
+                bridge_df = _run_with_progress(
+                    "Satış Köprüsü", engine.sales_bridge, df
+                )
+                SessionManager.set("bridge_df", bridge_df)
 
             bridge_df = SessionManager.get_df("bridge_df")
             if bridge_df is not None:
@@ -481,7 +523,6 @@ def render_visualizations_tab(df: pd.DataFrame) -> None:
                             )
                         st.dataframe(display, use_container_width=True, hide_index=True)
 
-        # ── BCG ───────────────────────────────────────────────────────────────
         with viz_tabs[2]:
             st.markdown('<div class="subsection-title">🎯 BCG Portföy Matrisi</div>',
                         unsafe_allow_html=True)
@@ -491,9 +532,10 @@ def render_visualizations_tab(df: pd.DataFrame) -> None:
                 "info", "BCG Matrisi Nasıl Okunur",
             )
             if st.button("🔄 BCG Matrisi Oluştur", key="btn_bcg", type="primary"):
-                with st.spinner("BCG matrisi oluşturuluyor…"):
-                    bcg_df = engine.bcg_analysis(df)
-                    SessionManager.set("bcg_df", bcg_df)
+                bcg_df = _run_with_progress(
+                    "BCG Analizi", engine.bcg_analysis, df
+                )
+                SessionManager.set("bcg_df", bcg_df)
 
             bcg_df = SessionManager.get_df("bcg_df")
             if bcg_df is not None:
@@ -510,7 +552,6 @@ def render_visualizations_tab(df: pd.DataFrame) -> None:
 
     except Exception as exc:
         st.error(f"❌ Görselleştirme sekmesi hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
@@ -526,14 +567,14 @@ def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
         bcg_df     = SessionManager.get_df("bcg_df")
         fc_df      = SessionManager.get_df("forecast_df")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
         gen = ReportGenerator()
 
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
             st.markdown("### 📊 Excel Raporu")
-            st.caption("7 sayfalık çalışma kitabı: Veri, EI, Erozyon, HHI, BCG, Pivotlar")
+            st.caption("7 sayfalık çalışma kitabı")
             if st.button("⬇️ Excel Oluştur", use_container_width=True, key="btn_excel_gen"):
                 with st.spinner("Excel oluşturuluyor…"):
                     xls = gen.generate_excel(df, summary, ei_df, erosion_df, hhi_df, bcg_df)
@@ -547,13 +588,11 @@ def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
 
         with col2:
             st.markdown("### 📄 PDF Raporu")
-            st.caption("10 sayfalık yönetici PDF'i, öngörüler ve metodoloji")
+            st.caption("Yönetici PDF'i")
             if REPORTLAB_OK:
                 if st.button("⬇️ PDF Oluştur", use_container_width=True, key="btn_pdf_gen"):
                     with st.spinner("PDF oluşturuluyor…"):
-                        pdf = gen.generate_pdf(
-                            summary, ei_df, erosion_df, hhi_df, bcg_df, fc_df
-                        )
+                        pdf = gen.generate_pdf(summary, ei_df, erosion_df, hhi_df, bcg_df, fc_df)
                         if pdf:
                             st.download_button(
                                 "💾 PDF İndir", data=pdf,
@@ -566,7 +605,7 @@ def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
 
         with col3:
             st.markdown("### 🌐 HTML Raporu")
-            st.caption("Kendi kendine yeten interaktif HTML")
+            st.caption("İnteraktif HTML")
             if st.button("⬇️ HTML Oluştur", use_container_width=True, key="btn_html_gen"):
                 with st.spinner("HTML oluşturuluyor…"):
                     html = gen.generate_html(df, summary)
@@ -589,16 +628,14 @@ def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
                 key="btn_csv_dl",
             )
 
-        # Hızlı İstatistikler
         st.markdown("---")
         section_title("📋 Hızlı İstatistikler")
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Kayıt Sayısı",   f"{summary.get('rows', 0):,}")
-        s2.metric("Sütun Sayısı",   f"{len(df.columns):,}")
-        s3.metric("Bellek (MB)",    f"{summary.get('memory_mb', 0):.2f}")
-        s4.metric("Eksik Veri",     f"{summary.get('missing_pct', 0):.2f}%")
+        s1.metric("Kayıt Sayısı",  f"{summary.get('rows', 0):,}")
+        s2.metric("Sütun Sayısı",  f"{len(df.columns):,}")
+        s3.metric("Bellek (MB)",   f"{summary.get('memory_mb', 0):.2f}")
+        s4.metric("Eksik Veri",    f"{summary.get('missing_pct', 0):.2f}%")
 
-        # Analiz Tamamlanma Durumu
         st.markdown("---")
         section_title("✅ Analiz Tamamlanma Durumu")
         status_items = [
@@ -623,11 +660,11 @@ def render_reporting_tab(df: pd.DataFrame, summary: Dict) -> None:
         st.markdown("---")
         if st.button("🔄 Tüm Analizi Sıfırla", use_container_width=True, key="btn_full_reset"):
             SessionManager.clear()
+            _free_memory()
             st.rerun()
 
     except Exception as exc:
         st.error(f"❌ Raporlama sekmesi hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 def render_data_tab(df: pd.DataFrame) -> None:
@@ -635,7 +672,7 @@ def render_data_tab(df: pd.DataFrame) -> None:
     try:
         section_title("🗄️ Veri Gezgini")
 
-        with st.expander("📋 Sütun Eşleme (standart isimler)", expanded=False):
+        with st.expander("📋 Sütun Eşleme", expanded=False):
             col_map = SessionManager.get("col_mapping")
             if col_map:
                 st.dataframe(
@@ -666,21 +703,14 @@ def render_data_tab(df: pd.DataFrame) -> None:
             show_df = show_df.sort_values(sort_col, ascending=sort_asc)
 
         st.caption(f"📊 {len(show_df):,} / {len(df):,} satır gösteriliyor")
-        st.dataframe(show_df, use_container_width=True, height=500)
+        # Cloud'da büyük tablolar yavaş render eder — max 1000 satır göster
+        st.dataframe(show_df.head(1000), use_container_width=True, height=500)
 
-        # Dozaj Verimliliği
-        de_cols = [c for c in df.columns if c.startswith("Dosage_Efficiency_")]
-        if de_cols:
-            st.markdown("---")
-            st.markdown("**💊 Dozaj Verimliliği (SU/Birim oranı)**")
-            grp_col = "Molecule" if "Molecule" in df.columns else None
-            de_show_cols = ([grp_col] if grp_col else []) + de_cols
-            de_df = df[de_show_cols].dropna()
-            st.dataframe(de_df.head(100), use_container_width=True, hide_index=True)
+        if len(show_df) > 1000:
+            st.info(f"ℹ️ İlk 1.000 satır gösteriliyor. Tamamını görmek için CSV indirin.")
 
     except Exception as exc:
         st.error(f"❌ Veri gezgini hatası: {exc}")
-        st.code(traceback.format_exc())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -688,15 +718,6 @@ def render_data_tab(df: pd.DataFrame) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """
-    Ana uygulama giriş noktası.
-
-    Akış:
-      1. SessionManager.init_defaults()
-      2. Sidebar: dosya yükleme + filtreler
-      3. Veri varsa: sekme düzeni
-      4. Veri yoksa: karşılama / yükleme ekranı
-    """
     SessionManager.init_defaults()
 
     # ── SIDEBAR ───────────────────────────────────────────────────────────────
@@ -711,14 +732,13 @@ def main() -> None:
             "📁 Pazar Verisi Yükle",
             type=["csv", "xlsx", "xls"],
             key="file_uploader",
-            help="IMS/IQVIA MAT formatı · CSV veya Excel",
+            help="IMS/IQVIA MAT formatı · CSV veya Excel · Max 400MB",
         )
 
         if uploaded is not None:
             file_bytes = uploaded.read()
             file_hash  = hashlib.md5(file_bytes).hexdigest()
 
-            # Aynı dosya tekrar yüklenirse yeniden işleme
             if SessionManager.get("file_hash") != file_hash:
                 with st.spinner("⚙️ Veri hattı işleniyor…"):
                     raw_df = DataPipeline.load(file_bytes, uploaded.name)
@@ -731,16 +751,22 @@ def main() -> None:
                             SessionManager.set("col_mapping", col_map)
                             SessionManager.set("file_name", uploaded.name)
                             SessionManager.set("file_hash", file_hash)
-                            # Yeni dosyada türetilmiş önbelleği temizle
                             SessionManager.clear([
                                 "ei_df", "erosion_df", "hhi_df", "bcg_df",
                                 "bridge_df", "cannibal_result",
                                 "forecast_df", "anomaly_df",
                                 "filtered_df", "summary",
                             ])
+                            _free_memory()
                             st.success(f"✅ {len(processed_df):,} satır yüklendi")
 
-        # Filtreler — yalnızca veri varsa
+                            # Büyük veri seti uyarısı
+                            if len(processed_df) > 50000:
+                                st.warning(
+                                    f"⚠️ Büyük veri seti ({len(processed_df):,} satır). "
+                                    "Filtreleri kullanmanız önerilir."
+                                )
+
         if SessionManager.is_loaded():
             processed_df = SessionManager.get_df("processed_df")
             if processed_df is not None:
@@ -764,7 +790,6 @@ def main() -> None:
     # ── ANA İÇERİK ────────────────────────────────────────────────────────────
 
     if not SessionManager.is_loaded():
-        # Karşılama / Yükleme ekranı
         st.markdown(
             """
             <div class="pharma-hero">
@@ -792,7 +817,6 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        # Özellik tablosu
         st.markdown("---")
         section_title("🚀 Platform Yetenekleri")
         feat_cols = st.columns(4)
@@ -820,7 +844,6 @@ def main() -> None:
 
     # ── Veri yüklüyse sekmeler ────────────────────────────────────────────────
 
-    # ✅ DÜZELTME: DataFrame için 'or' kullanmıyoruz — ValueError önlenir
     df = SessionManager.get_df("filtered_df")
     if df is None:
         df = SessionManager.get_df("processed_df")
@@ -832,7 +855,6 @@ def main() -> None:
     if summary is None:
         summary = DataPipeline.get_summary(df)
 
-    # Hero başlık
     st.markdown(
         f"""
         <div class="pharma-hero">
@@ -850,7 +872,6 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    # Sekmeler
     tabs = st.tabs([
         "📊 Genel Bakış",
         "🔬 Analitik",
@@ -888,4 +909,5 @@ if __name__ == "__main__":
         if st.button("🔄 Uygulamayı Yeniden Başlat",
                      key="crash_reload", use_container_width=True):
             SessionManager.clear()
+            _free_memory()
             st.rerun()
