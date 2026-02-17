@@ -1,9 +1,12 @@
 """
 PharmaIntelligence Enterprise v8.0 — analytics.py
 ──────────────────────────────────────────────────
-Modüller:
-  • AnalyticsEngine  : EI, Fiyat Erozyonu, HHI, Kanibalizasyon, BCG, Satış Köprüsü
-  • AIForecasting    : Ensemble Tahmin (ES+LR) + Anomali Tespiti (Isolation Forest)
+Streamlit Cloud uyumlu versiyon:
+  ✅ @st.cache_data ile tekrar hesaplama önlendi
+  ✅ IsolationForest n_estimators 200 → 100 (bellek tasarrufu)
+  ✅ Bootstrap 500 → 200 iterasyon (hız artışı)
+  ✅ groupby observed=True (kategori belleği optimize)
+  ✅ DataFrame kopyaları minimize edildi
 """
 
 import re
@@ -27,37 +30,35 @@ from core import DataPipeline
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# YARDIMCI: DataFrame hash için cache key üretici
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _df_hash(df: pd.DataFrame) -> str:
+    """Hızlı cache anahtarı — shape + ilk/son satır hash."""
+    try:
+        return f"{df.shape}_{pd.util.hash_pandas_object(df.iloc[[0, -1]]).sum()}"
+    except Exception:
+        return str(df.shape)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MODULE 5 — ANALYTICS ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AnalyticsEngine:
     """
     Farmasötik pazar analitik motoru.
-
-    Metotlar:
-      evolution_index()          → Evrim Endeksi (EI)
-      price_erosion_analysis()   → SU Fiyat Erozyonu
-      hhi_analysis()             → Herfindahl-Hirschman Endeksi
-      cannibalization_analysis() → Şirket içi molekül kanibalizasyonu
-      bcg_analysis()             → BCG / Kuadrant Analizi
-      sales_bridge()             → Satış Köprüsü (Fiyat ve Hacim Etkisi)
+    Streamlit Cloud için bellek ve süre optimize edildi.
     """
 
     # ── 5.1 Evrim Endeksi ────────────────────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def evolution_index(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         """
         Her molekül/ürün için Evrim Endeksi (EI) hesaplar.
-
         EI = (Ürün Büyüme Oranı / Pazar Medyan Büyüme Oranı) × 100
-
-        EI > 100 → Pazarı geçiyor
-        EI = 100 → Pazarla aynı hizada
-        EI < 100 → Pazarın altında kalıyor
-
-        Returns:
-            EI sütunları eklenmiş DataFrame veya None
         """
         try:
             growth_cols = sorted(
@@ -93,18 +94,9 @@ class AnalyticsEngine:
     # ── 5.2 Fiyat Erozyonu ───────────────────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def price_erosion_analysis(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        2022–2024 arası SU (Standart Birim) ortalama fiyat değişimini takip eder.
-
-        Metrikler:
-          - Yıllık SU fiyatı (ürün başına)
-          - İlk → son yıl birikimli erozyon %
-          - Erozyon kategorisi
-
-        Returns:
-            Molekül/Şirket bazında birleştirilmiş DataFrame veya None
-        """
+        """2022–2024 arası SU ortalama fiyat değişimini takip eder."""
         try:
             su_years = DataPipeline._detect_years(df, "SU_Avg_Price_")
             prefix = "SU_Avg_Price_"
@@ -129,13 +121,13 @@ class AnalyticsEngine:
                 return None
 
             grouped = (
-                df.groupby(group_col, observed=False)[list(agg_dict.keys())]
+                df.groupby(group_col, observed=True)[list(agg_dict.keys())]
                 .mean()
                 .reset_index()
             )
 
             first_col = f"{prefix}{su_years[0]}"
-            last_col = f"{prefix}{su_years[-1]}"
+            last_col  = f"{prefix}{su_years[-1]}"
 
             if first_col in grouped.columns and last_col in grouped.columns:
                 grouped["Birikimli_Erozyon_Pct"] = np.where(
@@ -149,13 +141,12 @@ class AnalyticsEngine:
                     labels=["Ağır Erozyon", "Orta Erozyon", "Stabil", "Fiyat Artışı"],
                 )
 
-            # Satış büyüklüğü ekle (baloncuk boyutu için)
             sales_years = DataPipeline._detect_years(df, "Sales_")
             if sales_years:
                 lsc = f"Sales_{sales_years[-1]}"
                 if lsc in df.columns:
                     sales_agg = (
-                        df.groupby(group_col, observed=False)[lsc].sum().reset_index()
+                        df.groupby(group_col, observed=True)[lsc].sum().reset_index()
                     )
                     grouped = grouped.merge(sales_agg, on=group_col, how="left")
 
@@ -168,26 +159,11 @@ class AnalyticsEngine:
     # ── 5.3 HHI Pazar Konsantrasyonu ────────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def hhi_analysis(
         df: pd.DataFrame, segment_col: str = "Company"
     ) -> Optional[pd.DataFrame]:
-        """
-        Pazar konsantrasyonu için Herfindahl-Hirschman Endeksi (HHI) hesaplar.
-
-        HHI = Σ (pazar_payı_i)²   (pay % olarak → değer 0–10.000)
-
-        ABD DOJ eşikleri:
-          < 1.500  : Rekabetçi
-          1.500–2.500: Orta Konsantre
-          > 2.500  : Yüksek Konsantre
-
-        Args:
-            df          : İşlenmiş DataFrame
-            segment_col : Konsantrasyon hesabı için sütun (Company / Molecule)
-
-        Returns:
-            Yıllık HHI değerleri ve sınıflandırma içeren DataFrame veya None
-        """
+        """Herfindahl-Hirschman Endeksi hesaplar."""
         try:
             if segment_col not in df.columns:
                 return None
@@ -202,14 +178,14 @@ class AnalyticsEngine:
                 if sc not in df.columns:
                     continue
 
-                agg = df.groupby(segment_col, observed=False)[sc].sum().reset_index()
+                agg = df.groupby(segment_col, observed=True)[sc].sum().reset_index()
                 agg = agg[agg[sc] > 0].copy()
                 total = agg[sc].sum()
                 if total <= 0:
                     continue
 
                 agg["Pay_Pct"] = (agg[sc] / total) * 100
-                hhi = float((agg["Pay_Pct"] ** 2).sum())
+                hhi  = float((agg["Pay_Pct"] ** 2).sum())
                 top3 = float(agg.nlargest(3, "Pay_Pct")["Pay_Pct"].sum())
 
                 records.append({
@@ -234,20 +210,11 @@ class AnalyticsEngine:
     # ── 5.4 Kanibalizasyon Analizi ───────────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def cannibalization_analysis(
         df: pd.DataFrame,
     ) -> Optional[Tuple[pd.DataFrame, Optional[pd.DataFrame]]]:
-        """
-        Şirket içi molekül satış kanibalizasyonunu tespit eder.
-
-        Yöntem:
-          ≥ 2 moleküle sahip her şirket için YoY büyüme oranlarının
-          ikili Pearson korelasyonu hesaplanır.
-          r < -0.7 → yüksek kanibalizasyon riski
-
-        Returns:
-            (pairs_df, corr_matrix_df) veya None
-        """
+        """Şirket içi molekül satış kanibalizasyonunu tespit eder."""
         try:
             if "Company" not in df.columns or "Molecule" not in df.columns:
                 return None
@@ -262,10 +229,10 @@ class AnalyticsEngine:
             pairs: List[Dict] = []
             corr_frames: List[pd.Series] = []
 
-            for company, grp in df.groupby("Company", observed=False):
+            for company, grp in df.groupby("Company", observed=True):
                 if str(company) == "Bilinmiyor":
                     continue
-                pivot = grp.groupby("Molecule", observed=False)[gc].mean().dropna()
+                pivot = grp.groupby("Molecule", observed=True)[gc].mean().dropna()
                 if len(pivot) < 2:
                     continue
 
@@ -275,7 +242,8 @@ class AnalyticsEngine:
                 for i in range(len(mol_list)):
                     for j in range(i + 1, len(mol_list)):
                         m1, m2 = mol_list[i], mol_list[j]
-                        v1, v2 = float(pivot.get(m1, np.nan)), float(pivot.get(m2, np.nan))
+                        v1 = float(pivot.get(m1, np.nan))
+                        v2 = float(pivot.get(m2, np.nan))
                         pairs.append({
                             "Şirket": company,
                             "Molekül_A": m1,
@@ -313,26 +281,16 @@ class AnalyticsEngine:
     # ── 5.5 BCG / Kuadrant Analizi ──────────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def bcg_analysis(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        BCG Matris sınıflandırması: Pazar Büyümesi vs. Göreceli Pazar Payı.
-
-        Kuadrantlar:
-          Yıldız      : Yüksek Büyüme + Yüksek Pay
-          Nakit İneği : Düşük Büyüme  + Yüksek Pay
-          Soru İşareti: Yüksek Büyüme + Düşük Pay
-          Köpek       : Düşük Büyüme  + Düşük Pay
-
-        Returns:
-            BCG_Kuadrant ve baloncuk boyutu sütunları içeren DataFrame veya None
-        """
+        """BCG Matris sınıflandırması."""
         try:
             growth_cols = [c for c in df.columns if re.match(r"Growth_\d{4}_\d{4}", c)]
             years = DataPipeline._detect_years(df, "Sales_")
             if not growth_cols or not years:
                 return None
 
-            gc = growth_cols[-1]
+            gc  = growth_cols[-1]
             lsc = f"Sales_{years[-1]}"
             if lsc not in df.columns:
                 return None
@@ -342,7 +300,7 @@ class AnalyticsEngine:
                 return None
 
             grp = (
-                df.groupby(group_col, observed=False)
+                df.groupby(group_col, observed=True)
                 .agg(Pazar_Büyümesi=(gc, "mean"), Toplam_Satış=(lsc, "sum"))
                 .reset_index()
                 .dropna()
@@ -380,15 +338,9 @@ class AnalyticsEngine:
     # ── 5.6 Satış Köprüsü / Waterfall ───────────────────────────────────────
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def sales_bridge(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        Önceki yıla göre satış değişimini ayrıştırır:
-          Hacim Etkisi = Fiyat_t0 × (Hacim_t1 - Hacim_t0)
-          Fiyat Etkisi = Hacim_t1 × (Fiyat_t1 - Fiyat_t0)
-
-        Returns:
-            En iyi 20 ürün için köprü bileşenleri içeren DataFrame veya None
-        """
+        """Satış değişimini Hacim ve Fiyat etkisine ayırır."""
         try:
             years = DataPipeline._detect_years(df, "Sales_")
             if len(years) < 2:
@@ -418,7 +370,7 @@ class AnalyticsEngine:
                 agg_cols[cpc] = "mean"
 
             grp = (
-                df.groupby(group_col, observed=False)
+                df.groupby(group_col, observed=True)
                 .agg(agg_cols)
                 .reset_index()
             )
@@ -428,11 +380,11 @@ class AnalyticsEngine:
             if has_units and has_price:
                 grp["Hacim_Etkisi"] = grp[ppc] * (grp[cuc] - grp[puc])
                 grp["Fiyat_Etkisi"] = grp[cuc] * (grp[cpc] - grp[ppc])
-                grp["Diğer"] = grp["Satış_Değişimi"] - grp["Hacim_Etkisi"] - grp["Fiyat_Etkisi"]
+                grp["Diğer"]        = grp["Satış_Değişimi"] - grp["Hacim_Etkisi"] - grp["Fiyat_Etkisi"]
             else:
                 grp["Hacim_Etkisi"] = grp["Satış_Değişimi"] * 0.6
                 grp["Fiyat_Etkisi"] = grp["Satış_Değişimi"] * 0.4
-                grp["Diğer"] = 0.0
+                grp["Diğer"]        = 0.0
 
             return grp.sort_values("Satış_Değişimi", ascending=False).head(20)
 
@@ -448,31 +400,20 @@ class AnalyticsEngine:
 class AIForecasting:
     """
     Yapay Zeka tabanlı tahmin ve anomali tespiti.
-
-    ensemble_forecast() → ES (%60) + LR (%40) hibrit model, bootstrap CI
-    anomaly_detection() → Isolation Forest çok boyutlu risk skorlaması
+    Streamlit Cloud için optimize edildi:
+      - Bootstrap 500 → 200
+      - IsolationForest n_estimators 200 → 100
+      - Sonuçlar cache'leniyor
     """
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def ensemble_forecast(
         df: pd.DataFrame, periods: int = 2
     ) -> Optional[pd.DataFrame]:
         """
         Toplam pazar satışları için hibrit ensemble tahmini.
-
-        Yöntem:
-          1. Mevcut yıllardan toplam yıllık satış hesapla
-          2. Exponential Smoothing (trend='add') fit et
-          3. LinearRegression yıl indeksine uygula
-          4. Karıştır: Tahmin = 0.6 × ES + 0.4 × LR
-          5. Bootstrap (500 yeniden örnekleme) güven aralığı
-
-        Args:
-            df      : İşlenmiş DataFrame
-            periods : Tahmin edilecek gelecek yıl sayısı
-
-        Returns:
-            Yıl, Tarihsel, Satış, Tahmin, CI sütunları içeren DataFrame veya None
+        ES (%60) + LR (%40), bootstrap CI (200 iterasyon).
         """
         try:
             years = DataPipeline._detect_years(df, "Sales_")
@@ -485,8 +426,8 @@ class AIForecasting:
                 if f"Sales_{yr}" in df.columns
             }
             ts = pd.Series(yearly)
-            n = len(ts)
-            x = np.arange(n)
+            n  = len(ts)
+            x  = np.arange(n)
 
             # Exponential Smoothing
             es_fc = np.zeros(n + periods)
@@ -513,11 +454,11 @@ class AIForecasting:
                 es_val = es_fc[i] if es_fc[i] != 0 else lr_fc[i]
                 blended[i] = 0.6 * es_val + 0.4 * lr_fc[i]
 
-            # Bootstrap CI
-            residuals = ts.values - blended[:n]
-            n_boot = 500
+            # Bootstrap CI — 200 iterasyon (Cloud için optimize)
+            residuals  = ts.values - blended[:n]
+            n_boot     = 200
             boot_preds = np.zeros((n_boot, periods))
-            rng = np.random.default_rng(42)
+            rng        = np.random.default_rng(42)
             for b in range(n_boot):
                 boot_preds[b] = blended[n:] + rng.choice(residuals, size=periods, replace=True)
 
@@ -525,16 +466,15 @@ class AIForecasting:
             lo95, hi95 = np.percentile(boot_preds, [2.5, 97.5], axis=0)
 
             all_years = list(years) + [years[-1] + i + 1 for i in range(periods)]
-            records = []
+            records   = []
 
             for i, yr in enumerate(all_years):
-                is_hist = i < n
+                is_hist  = i < n
                 prev_val = blended[i - 1] if i > 0 else None
                 curr_val = blended[i]
                 yoy = (
                     ((curr_val - prev_val) / abs(prev_val) * 100)
-                    if prev_val and prev_val != 0
-                    else None
+                    if prev_val and prev_val != 0 else None
                 )
 
                 rec: Dict[str, Any] = {
@@ -563,21 +503,12 @@ class AIForecasting:
             return None
 
     @staticmethod
+    @st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
     def anomaly_detection(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         """
         Isolation Forest ile anormal ürünleri tespit eder.
-
-        Özellikler:
-          - Son 2 satış yılı
-          - Son büyüme oranı
-          - Son ortalama fiyat
-          - Pazar payı
-
-        Contamination = %10 (ürünlerin %10'unun anormal olduğu varsayımı)
-
-        Returns:
-            Anomali_Skoru, Anomali_Etiketi, Anomali_Kategorisi sütunları eklenmiş
-            DataFrame veya None
+        n_estimators=100 (Cloud'da bellek tasarrufu için).
+        Contamination = %10.
         """
         try:
             features: List[str] = []
@@ -601,24 +532,34 @@ class AIForecasting:
             if len(features) < 2:
                 return None
 
+            # Büyük veri setlerinde örnekle
             X = df[features].fillna(0)
             if len(X) < 10:
                 return None
 
-            Xs = RobustScaler().fit_transform(X)
+            # Streamlit Cloud: 10k+ satırda örnekleme yap
+            sample_size = min(len(X), 5000)
+            if len(X) > sample_size:
+                X_fit = X.sample(n=sample_size, random_state=42)
+            else:
+                X_fit = X
+
+            Xs_full = RobustScaler().fit(X_fit).transform(X)
 
             iso = IsolationForest(
                 contamination=0.10,
-                n_estimators=200,
+                n_estimators=100,   # 200 → 100: Cloud bellek limiti
                 random_state=42,
+                n_jobs=1,           # Cloud'da çoklu işlem sorun çıkarır
             )
-            labels = iso.fit_predict(Xs)
-            scores = iso.score_samples(Xs)
+            iso.fit(Xs_full[:sample_size])
+            labels = iso.predict(Xs_full)
+            scores = iso.score_samples(Xs_full)
 
             result = df.copy()
-            result["Anomali_Etiketi"] = labels      # -1 = anormal, 1 = normal
-            result["Anomali_Skoru"] = scores        # düşük = daha anormal
-            result["Anormal_mı"] = labels == -1
+            result["Anomali_Etiketi"] = labels
+            result["Anomali_Skoru"]   = scores
+            result["Anormal_mı"]      = labels == -1
 
             result["Anomali_Kategorisi"] = pd.cut(
                 result["Anomali_Skoru"],
