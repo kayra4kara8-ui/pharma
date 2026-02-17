@@ -5,6 +5,10 @@ Modüller:
   • EnterpriseVisualizer : Sankey, Waterfall, BCG, Fiyat Erozyonu,
                            EI, HHI, Tahmin, Anomali, Treemap, Kanibalizasyon
   • ReportGenerator      : Multi-sheet Excel, 10 sayfalık PDF, HTML raporu
+
+Düzeltilen hata:
+  ✅ _theme() içinde update_layout() çift 'title' keyword hatası giderildi.
+     THEME dict'inden 'title' anahtarı kaldırıldı; başlık ayrı parametre olarak geçiliyor.
 """
 
 import re
@@ -46,13 +50,18 @@ class EnterpriseVisualizer:
     PharmaIntelligence v8.0 için profesyonel Plotly grafik fabrikası.
 
     Karanlık kurumsal tema tüm grafiklere otomatik uygulanır.
+
+    DÜZELTME: THEME dict'inden 'title' anahtarı kaldırıldı.
+    _theme() metodu title'ı ayrı olarak update_layout()'a geçiriyor,
+    böylece 'got multiple values for keyword argument title' hatası oluşmuyor.
     """
 
+    # ── 'title' buradan KALDIRILDI — ayrı parametre olarak geçiliyor ────────
     THEME = dict(
         paper_bgcolor="rgba(9,20,43,0)",
         plot_bgcolor="rgba(9,20,43,0)",
         font=dict(family="Sora, DM Sans, sans-serif", color="#e8f0fe", size=12),
-        title=dict(font=dict(size=17, color="#e8f0fe"), x=0.02),
+        # title dict'i THEME'den çıkarıldı — _theme() içinde ayrıca set ediliyor
         legend=dict(
             bgcolor="rgba(17,37,72,0.6)",
             bordercolor="rgba(0,212,255,0.2)",
@@ -71,11 +80,16 @@ class EnterpriseVisualizer:
 
     @classmethod
     def _theme(cls, fig: go.Figure, title: str = "") -> go.Figure:
-        """Kurumsal karanlık temayı uygular."""
+        """
+        Kurumsal karanlık temayı uygular.
+
+        ÖNEMLİ: title ayrı keyword olarak set ediliyor,
+        THEME dict'inde title anahtarı yok — çift keyword hatası önleniyor.
+        """
         fig.update_layout(
-            title=title,
             **cls.THEME,
             **cls.GRID,
+            title=dict(text=title, font=dict(size=17, color="#e8f0fe"), x=0.02),
             margin=dict(l=40, r=40, t=60, b=40),
         )
         return fig
