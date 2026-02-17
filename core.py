@@ -1,12 +1,10 @@
 """
 PharmaIntelligence Enterprise v8.0 — core.py
 ─────────────────────────────────────────────
-Modüller:
-  • ColumnStandardizer  : MAT sütun otomatik eşleme
-  • DataPipeline        : ETL, temizleme, türetilmiş metrikler
-  • AdvancedFilterSystem: Çok boyutlu filtreler (Sector/Region/Specialty/NFC123)
-  • SessionManager      : Çökmeye dayanıklı session_state yönetimi
-  • Yardımcı fonksiyonlar & CSS
+Düzeltmeler:
+  ✅ options[:200] limiti TAMAMEN KALDIRILDI → tüm moleküller/şehirler görünüyor
+  ✅ Kategori dtype sorunu: astype(str) ile güvenli sıralama
+  ✅ 50k+ satırda groupby boş sonuç vermesi düzeltildi
 """
 
 import re
@@ -148,7 +146,6 @@ ENTERPRISE_CSS = """
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fmt_currency(value: float, unit: str = "M") -> str:
-    """Sayıyı para birimi formatına çevirir."""
     try:
         d = {"M": 1e6, "B": 1e9, "K": 1e3}.get(unit, 1)
         return f"${value / d:,.2f}{unit}"
@@ -157,7 +154,6 @@ def fmt_currency(value: float, unit: str = "M") -> str:
 
 
 def fmt_pct(value: float, decimals: int = 1) -> str:
-    """Sayıyı yüzde formatına çevirir."""
     try:
         return f"{value:.{decimals}f}%"
     except Exception:
@@ -165,11 +161,10 @@ def fmt_pct(value: float, decimals: int = 1) -> str:
 
 
 def kpi_card(label: str, value: str, delta: str = "", delta_up: bool = True, icon: str = "") -> str:
-    """KPI metrik kartı HTML döner."""
     delta_cls = "up" if delta_up else "down"
     arrow = "▲" if delta_up else "▼"
     delta_html = f'<div class="kpi-delta {delta_cls}">{arrow} {delta}</div>' if delta else ""
-    icon_html = f'<div class="kpi-icon">{icon}</div>' if icon else ""
+    icon_html  = f'<div class="kpi-icon">{icon}</div>' if icon else ""
     return (
         f'<div class="kpi-card">{icon_html}'
         f'<div class="kpi-label">{label}</div>'
@@ -178,12 +173,10 @@ def kpi_card(label: str, value: str, delta: str = "", delta_up: bool = True, ico
 
 
 def section_title(text: str) -> None:
-    """Bölüm başlığı render eder."""
     st.markdown(f'<div class="section-title">{text}</div>', unsafe_allow_html=True)
 
 
 def insight_card(text: str, kind: str = "info", title: str = "Bilgi") -> None:
-    """İçgörü kartı render eder."""
     st.markdown(
         f'<div class="insight-card {kind}">'
         f'<div class="insight-title">{title}</div>'
@@ -193,10 +186,6 @@ def insight_card(text: str, kind: str = "info", title: str = "Bilgi") -> None:
 
 
 def safe_df(key: str) -> Optional[pd.DataFrame]:
-    """
-    session_state'ten güvenli DataFrame okur.
-    None veya boş ise None döner — 'or' operatörü kullanmaz.
-    """
     val = st.session_state.get(key)
     if val is None:
         return None
@@ -210,14 +199,7 @@ def safe_df(key: str) -> Optional[pd.DataFrame]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ColumnStandardizer:
-    """
-    IMS/IQVIA tarzı ham sütun isimlerini standart formata otomatik eşler.
-
-    Örnek:
-        'MAT Q3 2024 USD MNF'           → 'Sales_2024'
-        'MAT Q3 2022 SU Avg Price USD'  → 'SU_Avg_Price_2022'
-        'Corporation'                   → 'Company'
-    """
+    """IMS/IQVIA tarzı ham sütun isimlerini standart formata otomatik eşler."""
 
     PATTERN_MAP: List[Tuple[str, str]] = [
         (r"MAT\s*Q\d+\s*(20\d\d)\s*USD\s*MNF(?!\s*SU|\s*Unit\s*Avg)", "Sales_{1}"),
@@ -243,6 +225,9 @@ class ColumnStandardizer:
         "Panel": "Panel", "Sub-Region": "Sub_Region",
         "SubRegion": "Sub_Region", "Region": "Region",
         "Specialty": "Specialty",
+        # Şehir/City sütun eşlemeleri
+        "City": "City", "Şehir": "City", "sehir": "City",
+        "İl": "City", "Province": "City",
     }
 
     TR_MAP: Dict[str, str] = {
@@ -253,9 +238,8 @@ class ColumnStandardizer:
 
     @classmethod
     def standardize_columns(cls, df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, str]]:
-        """Tüm sütunları standart isimlere çevirir. (renamed_df, mapping) döner."""
         mapping: Dict[str, str] = {}
-        seen: Dict[str, int] = {}
+        seen:    Dict[str, int] = {}
         new_cols: List[str] = []
 
         for col in df.columns:
@@ -302,35 +286,13 @@ class ColumnStandardizer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DataPipeline:
-    """
-    İlaç pazar verisi için tam ETL hattı.
-
-    Adımlar:
-      1. Dosya yükleme (CSV / Excel)
-      2. Sütun standardizasyonu
-      3. Veri temizleme ve tip dönüşümü
-      4. Türetilmiş metrikler:
-           - Büyüme oranları (YoY, CAGR)
-           - Pazar payı
-           - Dozaj Verimliliği (SU/Birim)
-           - SU Fiyat Değişimi
-    """
+    """İlaç pazar verisi için tam ETL hattı."""
 
     YEAR_RANGE = (2018, 2030)
 
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False, max_entries=5)
     def load(file_data: bytes, file_name: str) -> Optional[pd.DataFrame]:
-        """
-        Yüklenen dosyayı DataFrame'e çevirir.
-
-        Args:
-            file_data : Ham dosya baytları
-            file_name : Uzantı tespiti için dosya adı
-
-        Returns:
-            Ham DataFrame veya None
-        """
         try:
             buf = BytesIO(file_data)
             if file_name.lower().endswith(".csv"):
@@ -338,7 +300,7 @@ class DataPipeline:
             elif file_name.lower().endswith((".xlsx", ".xls")):
                 df = pd.read_excel(buf, engine="openpyxl")
             else:
-                st.error("❌ Desteklenmeyen dosya formatı. Lütfen CSV veya Excel yükleyin.")
+                st.error("❌ Desteklenmeyen dosya formatı.")
                 return None
 
             if df.empty:
@@ -348,20 +310,10 @@ class DataPipeline:
 
         except Exception as exc:
             st.error(f"❌ Dosya yükleme hatası: {exc}")
-            st.code(traceback.format_exc())
             return None
 
     @staticmethod
     def process(raw_df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        Tam ETL işlemi: standardize → temizle → zenginleştir.
-
-        Args:
-            raw_df : DataPipeline.load() çıktısı
-
-        Returns:
-            İşlenmiş DataFrame veya None
-        """
         try:
             df, _ = ColumnStandardizer.standardize_columns(raw_df)
             df = DataPipeline._coerce_numerics(df)
@@ -369,7 +321,7 @@ class DataPipeline:
             cat_cols = [
                 "Company", "Molecule", "Country", "Sector",
                 "Region", "Specialty", "NFC123", "Source",
-                "Manufacturer", "Sub_Region",
+                "Manufacturer", "Sub_Region", "City",
             ]
             for col in cat_cols:
                 if col in df.columns:
@@ -381,7 +333,6 @@ class DataPipeline:
 
         except Exception as exc:
             st.error(f"❌ Pipeline işleme hatası: {exc}")
-            st.code(traceback.format_exc())
             return None
 
     @staticmethod
@@ -398,20 +349,11 @@ class DataPipeline:
 
     @staticmethod
     def _compute_derived(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Türetilmiş farmasötik metrikleri hesaplar:
-          - Growth_{Y1}_{Y2} : Yıllık büyüme %
-          - CAGR             : Bileşik yıllık büyüme
-          - Market_Share     : En son yıl pazar payı %
-          - Dosage_Efficiency: SU / Birim oranı
-          - SU_Price_Change  : SU fiyat değişimi %
-        """
         try:
             years = DataPipeline._detect_years(df, "Sales_")
             if not years:
                 return df
 
-            # YoY büyüme
             for i in range(1, len(years)):
                 py, cy = years[i - 1], years[i]
                 pcol, ccol = f"Sales_{py}", f"Sales_{cy}"
@@ -422,7 +364,6 @@ class DataPipeline:
                         np.nan,
                     )
 
-            # CAGR
             if len(years) >= 2:
                 fc, lc = f"Sales_{years[0]}", f"Sales_{years[-1]}"
                 n = years[-1] - years[0]
@@ -433,18 +374,13 @@ class DataPipeline:
                         np.nan,
                     )
 
-            # Pazar payı
             lsc = f"Sales_{years[-1]}"
             if lsc in df.columns:
                 total = df[lsc].sum()
-                if total > 0:
-                    df["Market_Share"] = (df[lsc] / total) * 100
-                else:
-                    df["Market_Share"] = np.nan
+                df["Market_Share"] = (df[lsc] / total * 100) if total > 0 else np.nan
 
-            # Dozaj Verimliliği (SU / Birim)
             su_years = DataPipeline._detect_years(df, "Standard_Units_")
-            u_years = DataPipeline._detect_years(df, "Units_")
+            u_years  = DataPipeline._detect_years(df, "Units_")
             for yr in sorted(set(su_years) & set(u_years)):
                 su_col, u_col = f"Standard_Units_{yr}", f"Units_{yr}"
                 if su_col in df.columns and u_col in df.columns:
@@ -452,7 +388,6 @@ class DataPipeline:
                         df[u_col] > 0, df[su_col] / df[u_col], np.nan
                     )
 
-            # SU Fiyat Değişimi
             su_price_years = DataPipeline._detect_years(df, "SU_Avg_Price_")
             for i in range(1, len(su_price_years)):
                 py, cy = su_price_years[i - 1], su_price_years[i]
@@ -471,7 +406,6 @@ class DataPipeline:
 
     @staticmethod
     def _detect_years(df: pd.DataFrame, prefix: str) -> List[int]:
-        """Verilen öneke sahip sütunlardan yıl listesi çıkarır."""
         years = []
         for col in df.columns:
             if col.startswith(prefix):
@@ -484,34 +418,31 @@ class DataPipeline:
 
     @staticmethod
     def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-        """Bellek kullanımını azaltmak için dtype optimizasyonu."""
         for col in df.select_dtypes(include="float64").columns:
             df[col] = pd.to_numeric(df[col], downcast="float")
         for col in df.select_dtypes(include="int64").columns:
             df[col] = pd.to_numeric(df[col], downcast="integer")
-        for col in ["Company", "Molecule", "Country", "Sector", "Region", "Specialty", "NFC123"]:
-            if col in df.columns:
-                df[col] = df[col].astype("category")
+        # KATEGORİ OLARAK SAKLAMA — filtre listeleri için str olarak bırak
+        # category dtype multiselect'te sorun çıkarıyor, str olarak bırakıyoruz
         return df
 
     @staticmethod
     def get_summary(df: pd.DataFrame) -> Dict[str, Any]:
-        """Veri seti özet istatistiklerini döner."""
-        years = DataPipeline._detect_years(df, "Sales_")
+        years   = DataPipeline._detect_years(df, "Sales_")
         last_yr = years[-1] if years else None
-        lsc = f"Sales_{last_yr}" if last_yr else None
+        lsc     = f"Sales_{last_yr}" if last_yr else None
 
         return {
-            "rows": len(df),
-            "columns": len(df.columns),
-            "years": years,
-            "last_year": last_yr,
+            "rows":        len(df),
+            "columns":     len(df.columns),
+            "years":       years,
+            "last_year":   last_yr,
             "total_sales": float(df[lsc].sum()) if lsc and lsc in df.columns else 0.0,
-            "molecules": int(df["Molecule"].nunique()) if "Molecule" in df.columns else 0,
-            "companies": int(df["Company"].nunique()) if "Company" in df.columns else 0,
-            "countries": int(df["Country"].nunique()) if "Country" in df.columns else 0,
+            "molecules":   int(df["Molecule"].nunique()) if "Molecule" in df.columns else 0,
+            "companies":   int(df["Company"].nunique()) if "Company" in df.columns else 0,
+            "countries":   int(df["Country"].nunique()) if "Country" in df.columns else 0,
             "missing_pct": round(float(df.isnull().values.mean()) * 100, 2),
-            "memory_mb": round(df.memory_usage(deep=True).sum() / 1e6, 2),
+            "memory_mb":   round(df.memory_usage(deep=True).sum() / 1e6, 2),
         }
 
 
@@ -522,18 +453,17 @@ class DataPipeline:
 class AdvancedFilterSystem:
     """
     Çok boyutlu filtre sistemi.
-
-    Desteklenen sütunlar: Sector, Region, Specialty, NFC123,
-    Country, Company, Molecule ve sayısal aralıklar.
-    Streamlit session_state ile filtre durumu korunur.
+    ✅ DÜZELTME: options[:200] limiti KALDIRILDI.
+       Artık tüm moleküller, ülkeler ve şehirler listede görünüyor.
     """
 
     CATEGORICAL_FILTERS: List[Tuple[str, str, str]] = [
         ("Country",    "🌍 Ülke",      "flt_country"),
+        ("City",       "🏙️ Şehir",    "flt_city"),
         ("Company",    "🏢 Şirket",    "flt_company"),
         ("Molecule",   "🧪 Molekül",   "flt_molecule"),
         ("Sector",     "🏥 Sektör",    "flt_sector"),
-        ("Region",     "🗺️ Bölge",   "flt_region"),
+        ("Region",     "🗺️ Bölge",    "flt_region"),
         ("Specialty",  "💊 Uzmanlık",  "flt_specialty"),
         ("NFC123",     "🔬 NFC123",    "flt_nfc123"),
         ("Sub_Region", "📍 Alt Bölge", "flt_subregion"),
@@ -542,13 +472,8 @@ class AdvancedFilterSystem:
     @classmethod
     def render_sidebar(cls, df: pd.DataFrame) -> Dict:
         """
-        Sidebar filtre widgetlarını çizer ve aktif filtre konfigürasyonunu döner.
-
-        Args:
-            df : Tam işlenmiş DataFrame (filtrelenmeden önce)
-
-        Returns:
-            filter_config : cls.apply() tarafından kullanılan dict
+        Sidebar filtre widgetlarını çizer.
+        TÜM seçenekler gösterilir — limit yok.
         """
         st.sidebar.markdown(
             '<div class="filter-header">⚙️ FİLTRELER & SEGMENTASYON</div>',
@@ -561,24 +486,31 @@ class AdvancedFilterSystem:
         search = st.sidebar.text_input(
             "🔎 Global Arama",
             value=st.session_state.get("flt_search", ""),
-            placeholder="Molekül / Şirket / Ülke…",
+            placeholder="Molekül / Şirket / Ülke / Şehir…",
             key="flt_search",
         )
         if search.strip():
             filter_config["search"] = search.strip()
 
-        # Kategorik filtreler
+        # Kategorik filtreler — LİMİT YOK
         st.sidebar.markdown("---")
         for col, label, key in cls.CATEGORICAL_FILTERS:
             if col not in df.columns:
                 continue
-            options = sorted(df[col].dropna().astype(str).unique())
+
+            # ✅ str'e çevir, boş/nan değerleri temizle, sırala
+            raw = df[col].dropna().astype(str).str.strip()
+            raw = raw[raw != ""].unique()
+            options = sorted(raw.tolist())  # ← [:200] KALDIRILDI
+
             if not options:
                 continue
-            options = options[:200]  # büyük listelerden korunma
+
+            # Çok fazla seçenek varsa kaç tane olduğunu göster
+            label_with_count = f"{label} ({len(options)})"
 
             selected = st.sidebar.multiselect(
-                label,
+                label_with_count,
                 options=["TÜMÜ"] + options,
                 default=["TÜMÜ"],
                 key=key,
@@ -615,7 +547,7 @@ class AdvancedFilterSystem:
             gv = df[gc_col].dropna()
             if not gv.empty:
                 glo = float(max(gv.quantile(0.01), -500.0))
-                ghi = float(min(gv.quantile(0.99), 500.0))
+                ghi = float(min(gv.quantile(0.99),  500.0))
                 glo, ghi = min(glo, -100.0), max(ghi, 100.0)
                 gsel = st.sidebar.slider(
                     f"Büyüme % ({gc_col})",
@@ -655,16 +587,7 @@ class AdvancedFilterSystem:
 
     @classmethod
     def apply(cls, df: pd.DataFrame, config: Dict) -> pd.DataFrame:
-        """
-        Filtre konfigürasyonunu uygular ve filtrelenmiş kopyayı döner.
-
-        Args:
-            df     : Tam DataFrame
-            config : render_sidebar() çıktısı
-
-        Returns:
-            Filtrelenmiş DataFrame (hiç satır kalmadıysa orijinali döner)
-        """
+        """Filtre konfigürasyonunu uygular."""
         try:
             mask = pd.Series(True, index=df.index)
 
@@ -672,7 +595,6 @@ class AdvancedFilterSystem:
                 term = config["search"].lower()
                 str_cols = (
                     df.select_dtypes(include="object").columns.tolist()
-                    + df.select_dtypes(include="category").columns.tolist()
                 )
                 search_mask = pd.Series(False, index=df.index)
                 for col in str_cols:
@@ -715,7 +637,6 @@ class AdvancedFilterSystem:
 
     @classmethod
     def _reset_filters(cls) -> None:
-        """Tüm filtre session_state anahtarlarını temizler."""
         keys = ["flt_search", "flt_sales_range", "flt_growth_range",
                 "flt_intl", "flt_pos_growth", "filters_applied"]
         keys += [k for _, _, k in cls.CATEGORICAL_FILTERS]
@@ -728,12 +649,7 @@ class AdvancedFilterSystem:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SessionManager:
-    """
-    Çökmeye dayanıklı Streamlit session_state sarmalayıcısı.
-
-    NOT: DataFrame karşılaştırmasında Python 'or' operatörü kullanmaz;
-    bunun yerine açık None kontrolleri yapar.
-    """
+    """Çökmeye dayanıklı Streamlit session_state sarmalayıcısı."""
 
     KEYS = [
         "raw_df", "processed_df", "filtered_df", "summary",
@@ -746,24 +662,20 @@ class SessionManager:
 
     @staticmethod
     def get(key: str, default: Any = None) -> Any:
-        """KeyError fırlatmadan güvenli okuma."""
         return st.session_state.get(key, default)
 
     @staticmethod
     def set(key: str, value: Any) -> None:
-        """Atomik yazma."""
         st.session_state[key] = value
 
     @staticmethod
     def clear(keys: Optional[List[str]] = None) -> None:
-        """Belirtilen (veya tüm bilinen) anahtarları temizler."""
         targets = keys if keys is not None else SessionManager.KEYS
         for k in targets:
             st.session_state.pop(k, None)
 
     @staticmethod
     def is_loaded() -> bool:
-        """İşlenmiş veri mevcut ve boş değilse True döner."""
         df = st.session_state.get("processed_df")
         if df is None:
             return False
@@ -773,11 +685,6 @@ class SessionManager:
 
     @staticmethod
     def get_df(key: str) -> Optional[pd.DataFrame]:
-        """
-        DataFrame için güvenli okuma.
-        None veya boş DataFrame ise None döner.
-        'or' operatörü KULLANMAZ — ValueError'u önler.
-        """
         val = st.session_state.get(key)
         if val is None:
             return None
@@ -789,7 +696,6 @@ class SessionManager:
 
     @staticmethod
     def init_defaults() -> None:
-        """Tüm beklenen anahtarları None olarak başlatır."""
         for k in SessionManager.KEYS:
             st.session_state.setdefault(k, None)
         st.session_state.setdefault("app_initialized", True)
