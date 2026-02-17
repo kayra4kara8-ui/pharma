@@ -1,0 +1,31 @@
+[server]
+# Streamlit Cloud 503 hatası önleme ayarları
+maxUploadSize = 400
+maxMessageSize = 400
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+# Bağlantı zaman aşımı uzatma
+# runOnSave = false
+
+[browser]
+gatherUsageStats = false
+serverAddress = "0.0.0.0"
+
+[runner]
+# Magic komutlarını kapat - bellek tasarrufu
+magicEnabled = false
+# Hata toleransı
+fastReruns = true
+
+[client]
+# Büyük payload için zaman aşımı
+toolbarMode = "minimal"
+showErrorDetails = true
+
+[theme]
+base = "dark"
+backgroundColor = "#060d1a"
+secondaryBackgroundColor = "#0d1f3c"
+primaryColor = "#00d4ff"
+textColor = "#e8f0fe"
