@@ -44,7 +44,6 @@ st.set_page_config(
 
 from core import (
     ENTERPRISE_CSS,
-    AdvancedFilterSystem,
     ColumnStandardizer,
     DataPipeline,
     SessionManager,
@@ -55,6 +54,7 @@ from core import (
 )
 from analytics import AIForecasting, AnalyticsEngine
 from visualizer import EnterpriseVisualizer, ReportGenerator
+from filters import ProfessionalFilterSystem, render_sidebar_summary
 
 st.markdown(ENTERPRISE_CSS, unsafe_allow_html=True)
 
@@ -849,22 +849,12 @@ def main() -> None:
         if SessionManager.is_loaded():
             processed_df = SessionManager.get_df("processed_df")
             if processed_df is not None:
-                filter_config = AdvancedFilterSystem.render_sidebar(processed_df)
-                filtered_df   = AdvancedFilterSystem.apply(processed_df, filter_config)
-                SessionManager.set("filtered_df", filtered_df)
-                summary = DataPipeline.get_summary(filtered_df)
-                SessionManager.set("summary", summary)
-
-                st.markdown("---")
-                st.markdown(
-                    '<div class="filter-status-box">'
-                    '<span class="pulse-dot"></span>'
-                    f"<b>{len(filtered_df):,}</b> satır · "
-                    f"<b>{summary.get('molecules', 0)}</b> molekül · "
-                    f"<b>{summary.get('companies', 0)}</b> şirket"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
+                # Filtreler ana panelde gösteriliyor (ProfessionalFilterSystem)
+                # Sidebar'da sadece özet
+                filtered_df = SessionManager.get_df("filtered_df")
+                if filtered_df is None:
+                    filtered_df = processed_df
+                render_sidebar_summary(processed_df, filtered_df)
 
     # ── ANA İÇERİK ────────────────────────────────────────────────────────────
 
@@ -923,34 +913,56 @@ def main() -> None:
 
     # ── Veri yüklüyse sekmeler ────────────────────────────────────────────────
 
-    df = SessionManager.get_df("filtered_df")
-    if df is None:
-        df = SessionManager.get_df("processed_df")
-    if df is None:
+    processed_df = SessionManager.get_df("processed_df")
+    if processed_df is None:
         st.error("❌ Veri bulunamadı. Lütfen dosyayı yeniden yükleyin.")
         return
 
-    summary = SessionManager.get("summary")
-    if summary is None:
-        summary = DataPipeline.get_summary(df)
-
+    # Hero başlık (ham veri bilgileri)
+    _mol_n  = processed_df["Molecule"].nunique() if "Molecule" in processed_df.columns else "—"
+    _comp_n = processed_df["Company"].nunique()  if "Company"  in processed_df.columns else "—"
+    _ctr_n  = processed_df["Country"].nunique()  if "Country"  in processed_df.columns else "—"
+    _yrs    = DataPipeline._detect_years(processed_df, "Sales_")
+    _yr_str = " → ".join(str(y) for y in _yrs) if _yrs else "—"
     st.markdown(
-        f"""
+        f'''
         <div class="pharma-hero">
             <div class="version-badge">Enterprise v8.0</div>
             <h1 class="pharma-title">PharmaIntelligence</h1>
             <p class="pharma-subtitle">
-                <b>{summary.get('rows', 0):,}</b> kayıt ·
-                <b>{summary.get('molecules', 0)}</b> molekül ·
-                <b>{summary.get('companies', 0)}</b> şirket ·
-                <b>{summary.get('countries', 0)}</b> ülke ·
-                Dönem: {' → '.join(str(y) for y in summary.get('years', []))}
+                <b>{len(processed_df):,}</b> kayıt &nbsp;·&nbsp;
+                <b>{_mol_n}</b> molekül &nbsp;·&nbsp;
+                <b>{_comp_n}</b> şirket &nbsp;·&nbsp;
+                <b>{_ctr_n}</b> ülke &nbsp;·&nbsp;
+                Dönem: {_yr_str}
             </p>
         </div>
-        """,
+        ''',
         unsafe_allow_html=True,
     )
 
+    # ── Profesyonel Filtre Paneli ─────────────────────────────────────────────
+    filter_config = ProfessionalFilterSystem.render(processed_df)
+    df = ProfessionalFilterSystem.apply(processed_df, filter_config)
+
+    # Session'a kaydet
+    SessionManager.set("filtered_df", df)
+    summary = DataPipeline.get_summary(df)
+    SessionManager.set("summary", summary)
+
+    # Filtre sonucu banner
+    if len(df) < len(processed_df):
+        _pct = len(df) / len(processed_df) * 100
+        st.markdown(
+            f'<div style="background:rgba(255,183,0,0.1);border:1px solid rgba(255,183,0,0.3);'
+            f'border-radius:8px;padding:.55rem 1rem;font-size:.86rem;margin-bottom:.6rem;color:#ffb700">'
+            f'🔽 <b>{len(df):,}</b> satır gösteriliyor '
+            f'({len(processed_df):,} toplam · <b>{_pct:.1f}%</b>) — '
+            f'<span style="color:#8ba3c7">Tüm veriyi görmek için filtreleri sıfırlayın</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Sekmeler ─────────────────────────────────────────────────────────────
     tabs = st.tabs([
         "📊 Genel Bakış",
         "🔬 Analitik",
