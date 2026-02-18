@@ -54,7 +54,7 @@ from core import (
 )
 from analytics import AIForecasting, AnalyticsEngine
 from visualizer import EnterpriseVisualizer, ReportGenerator
-from filters import ProfessionalFilterSystem, render_sidebar_summary
+from filters import SidebarFilterSystem, render_filter_status
 
 st.markdown(ENTERPRISE_CSS, unsafe_allow_html=True)
 
@@ -849,12 +849,12 @@ def main() -> None:
         if SessionManager.is_loaded():
             processed_df = SessionManager.get_df("processed_df")
             if processed_df is not None:
-                # Filtreler ana panelde gösteriliyor (ProfessionalFilterSystem)
-                # Sidebar'da sadece özet
-                filtered_df = SessionManager.get_df("filtered_df")
-                if filtered_df is None:
-                    filtered_df = processed_df
-                render_sidebar_summary(processed_df, filtered_df)
+                # Filtreler sidebar'da render ediliyor
+                filter_config = SidebarFilterSystem.render(processed_df)
+                filtered_df = SidebarFilterSystem.apply(processed_df, filter_config)
+                SessionManager.set("filtered_df", filtered_df)
+                summary = DataPipeline.get_summary(filtered_df)
+                SessionManager.set("summary", summary)
 
     # ── ANA İÇERİK ────────────────────────────────────────────────────────────
 
@@ -941,26 +941,16 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Profesyonel Filtre Paneli ─────────────────────────────────────────────
-    filter_config = ProfessionalFilterSystem.render(processed_df)
-    df = ProfessionalFilterSystem.apply(processed_df, filter_config)
-
-    # Session'a kaydet
-    SessionManager.set("filtered_df", df)
+    # ── Filtre sonucu durum banner'ı ─────────────────────────────────────────
+    df = SessionManager.get_df("filtered_df")
+    if df is None:
+        df = processed_df
+    
     summary = DataPipeline.get_summary(df)
     SessionManager.set("summary", summary)
-
-    # Filtre sonucu banner
-    if len(df) < len(processed_df):
-        _pct = len(df) / len(processed_df) * 100
-        st.markdown(
-            f'<div style="background:rgba(255,183,0,0.1);border:1px solid rgba(255,183,0,0.3);'
-            f'border-radius:8px;padding:.55rem 1rem;font-size:.86rem;margin-bottom:.6rem;color:#ffb700">'
-            f'🔽 <b>{len(df):,}</b> satır gösteriliyor '
-            f'({len(processed_df):,} toplam · <b>{_pct:.1f}%</b>) — '
-            f'<span style="color:#8ba3c7">Tüm veriyi görmek için filtreleri sıfırlayın</span></div>',
-            unsafe_allow_html=True,
-        )
+    
+    # Filtre durumu göster
+    render_filter_status(processed_df, df)
 
     # ── Sekmeler ─────────────────────────────────────────────────────────────
     tabs = st.tabs([
