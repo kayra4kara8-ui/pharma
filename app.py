@@ -14,7 +14,7 @@ import hashlib
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-
+from analytics_pro_tab import render_advanced_analytics_tab
 import pandas as pd
 import streamlit as st
 
@@ -1357,6 +1357,7 @@ def main() -> None:
     tabs = st.tabs([
         "📊 Genel Bakış",
         "🔬 Analitik",
+        "🧬 Gelişmiş Analitik",
         "🤖 Yapay Zeka",
         "📈 Görselleştirmeler",
         "🗄️ Veri Gezgini",
@@ -1368,12 +1369,14 @@ def main() -> None:
     with tabs[1]:
         render_analytics_tab(df)
     with tabs[2]:
-        render_ai_tab(df)
+        render_advanced_analytics_tab(df)  # ← YENİ
     with tabs[3]:
-        render_visualizations_tab(df)
+        render_ai_tab(df)
     with tabs[4]:
-        render_data_tab(df)
+        render_visualizations_tab(df)
     with tabs[5]:
+        render_data_tab(df)
+    with tabs[6]:
         render_reporting_tab(df, summary)
 
 
