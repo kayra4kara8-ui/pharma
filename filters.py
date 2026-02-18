@@ -1,15 +1,15 @@
 """
-PharmaIntelligence Enterprise v8.0 — filters.py  v2.0
-──────────────────────────────────────────────────────
-Tamamen yeniden yazıldı.
+PharmaIntelligence Enterprise v8.0 — filters.py v3.0
+────────────────────────────────────────────────────
+Sidebar filtre sistemi — sol panel, tam seçenek listesi
 
-Mimari kararlar:
-  • st.expander KULLANILMADI  → expander içi button/multiselect Cloud'da
-                                 session state döngüsü oluşturur
-  • Buton→multiselect default KULLANILMADI → widget key çakışması
-  • Tümü Seç / Temizle → st.checkbox ile (button değil)
-  • apply() tamamen vektörel, 50k+ satırda hızlı
-  • Her adımda try/except → uygulama asla çökmez
+Özellikler:
+  ✅ Tüm filtreler sidebar'da (sol tarafta)
+  ✅ Her boyut için arama kutusu — sınırsız seçenek
+  ✅ Daraltılabilir gruplar — yer tasarrufu
+  ✅ Tüm moleküller / şehirler / ülkeler görünür
+  ✅ 50k+ satırda hızlı, güvenli
+  ✅ Streamlit Cloud uyumlu
 """
 
 import re
@@ -23,34 +23,18 @@ import streamlit as st
 # ─────────────────────────────────────────────────────────────────────────────
 
 DIMS: List[Tuple[str, str, str, str]] = [
-    ("Country",    "Ulke",      "🌍", "pf_country"),
-    ("City",       "Sehir",     "🏙️","pf_city"),
-    ("Company",    "Sirket",    "🏢", "pf_company"),
-    ("Molecule",   "Molekul",   "🧪", "pf_molecule"),
-    ("Sector",     "Sektor",    "🏥", "pf_sector"),
-    ("Region",     "Bolge",     "🗺️","pf_region"),
-    ("Sub_Region", "Alt Bolge", "📍", "pf_subregion"),
-    ("Specialty",  "Uzmanlik",  "💊", "pf_specialty"),
-    ("NFC123",     "NFC123",    "🔬", "pf_nfc123"),
+    ("Country",    "Ülke",      "🌍", "sf_country"),
+    ("City",       "Şehir",     "🏙️", "sf_city"),
+    ("Company",    "Şirket",    "🏢", "sf_company"),
+    ("Molecule",   "Molekül",   "🧪", "sf_molecule"),
+    ("Sector",     "Sektör",    "🏥", "sf_sector"),
+    ("Region",     "Bölge",     "🗺️", "sf_region"),
+    ("Sub_Region", "Alt Bölge", "📍", "sf_subregion"),
+    ("Specialty",  "Uzmanlık",  "💊", "sf_specialty"),
+    ("NFC123",     "NFC123",    "🔬", "sf_nfc123"),
 ]
 
 _JUNK = {"", "nan", "none", "bilinmiyor", "unknown", "n/a", "-", "null", "na"}
-
-_CSS = """<style>
-.pf-title{font-size:1rem;font-weight:800;color:#00d4ff;margin:0 0 .8rem 0;letter-spacing:.4px;}
-.pf-dim-lbl{font-size:.67rem;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:#8ba3c7;margin-bottom:.3rem;}
-.pf-chips{display:flex;flex-wrap:wrap;gap:.22rem;margin-top:.35rem;min-height:20px;}
-.pf-chip{display:inline-block;background:rgba(0,112,224,.2);border:1px solid rgba(0,212,255,.3);
-  color:#00d4ff;font-size:.67rem;font-weight:700;padding:.08rem .4rem;border-radius:20px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px;}
-.pf-chip-all{background:rgba(0,229,160,.1);border-color:rgba(0,229,160,.3);color:#00e5a0;}
-.pf-sep{height:1px;background:rgba(0,212,255,.1);margin:.9rem 0;}
-.pf-active{background:linear-gradient(135deg,rgba(0,212,255,.06),rgba(123,47,255,.06));
-  border:1px solid rgba(0,212,255,.14);border-radius:8px;padding:.5rem .9rem;
-  font-size:.8rem;color:#8ba3c7;margin-top:.4rem;}
-.pf-tag{display:inline-block;background:rgba(255,183,0,.1);border:1px solid rgba(255,183,0,.28);
-  color:#ffb700;font-size:.67rem;font-weight:700;padding:.06rem .35rem;border-radius:20px;margin:.08rem .12rem;}
-</style>"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,28 +42,22 @@ _CSS = """<style>
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _opts(s: pd.Series) -> List[str]:
+    """Temiz, sıralı, benzersiz seçenek listesi."""
     try:
         v = s.astype(str).str.strip()
         return sorted(v[~v.str.lower().isin(_JUNK)].unique().tolist())
     except Exception:
         return []
 
+
 def _ss_list(key: str) -> List[str]:
+    """Session state'ten liste oku."""
     v = st.session_state.get(key, [])
     return v if isinstance(v, list) else []
 
-def _chips(sel: List[str], total: int) -> str:
-    if not sel or len(sel) == total:
-        return '<div class="pf-chips"><span class="pf-chip pf-chip-all">✓ Tümü</span></div>'
-    html = "".join(
-        f'<span class="pf-chip" title="{v}">{v[:15]}{"…" if len(v)>15 else ""}</span>'
-        for v in sel[:5]
-    )
-    if len(sel) > 5:
-        html += f'<span class="pf-chip">+{len(sel)-5}</span>'
-    return f'<div class="pf-chips">{html}</div>'
 
 def _detect_years(df: pd.DataFrame, prefix: str) -> List[int]:
+    """Sales_ / Units_ gibi prefix'teki yılları döner."""
     years = []
     for c in df.columns:
         if c.startswith(prefix):
@@ -92,272 +70,200 @@ def _detect_years(df: pd.DataFrame, prefix: str) -> List[int]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ANA SINIF
+# SIDEBAR FİLTRE SİSTEMİ
 # ─────────────────────────────────────────────────────────────────────────────
 
-class FilterPanel:
+class SidebarFilterSystem:
+    """
+    Sidebar'da tam ekran filtre paneli.
+    Tüm seçenekler görünür, sınır yok.
+    """
 
     @classmethod
     def render(cls, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Sidebar'da filtre panelini çizer ve config döner.
+        Hiçbir exception dışarı sızmaz.
+        """
         try:
-            st.markdown(_CSS, unsafe_allow_html=True)
-            return cls._inner(df)
+            return cls._render_inner(df)
         except Exception as e:
-            st.warning(f"⚠️ Filtre paneli yüklenemedi: {e}")
+            st.sidebar.warning(f"⚠️ Filtre paneli yüklenemedi: {e}")
             return {}
 
     @classmethod
-    def _inner(cls, df: pd.DataFrame) -> Dict[str, Any]:
+    def _render_inner(cls, df: pd.DataFrame) -> Dict[str, Any]:
         cfg: Dict[str, Any] = {}
-        live = [(c,l,e,k) for c,l,e,k in DIMS if c in df.columns]
 
-        st.markdown('<div class="pf-title">🎛️ Veri Filtreleme Paneli</div>',
-                    unsafe_allow_html=True)
+        # Veri setinde var olan boyutlar
+        live = [(c, l, e, k) for c, l, e, k in DIMS if c in df.columns]
 
-        # ── Üst çubuk: global arama + sıfırla ────────────────────────────
-        gc1, gc2, gc3 = st.columns([5, 1, 1])
-        with gc1:
-            search = st.text_input(
-                "_srch_", key="pf_search",
-                placeholder="🔎  Tüm alanlarda ara — molekül, şirket, ülke, şehir…",
-                label_visibility="collapsed",
-            )
-        with gc2:
-            if st.button("🗑️ Sıfırla", key="pf_rst", use_container_width=True):
-                cls._reset(live); st.rerun()
-        with gc3:
-            st.markdown(
-                f'<div style="text-align:center;padding:.4rem 0">'
-                f'<div style="color:#00d4ff;font-size:1rem;font-weight:900">{len(df):,}</div>'
-                f'<div style="color:#4a6080;font-size:.68rem">satır</div></div>',
-                unsafe_allow_html=True,
-            )
+        st.sidebar.markdown(
+            '<div style="font-size:1.05rem;font-weight:800;color:#00d4ff;'
+            'margin:0 0 .8rem 0;letter-spacing:.5px">🎛️ FİLTRELER</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Global arama ──────────────────────────────────────────────────
+        search = st.sidebar.text_input(
+            "🔎 Global Arama",
+            value=st.session_state.get("sf_search", ""),
+            placeholder="Tüm alanlarda ara…",
+            key="sf_search",
+        )
         if search.strip():
             cfg["search"] = search.strip()
 
-        st.markdown('<div class="pf-sep"></div>', unsafe_allow_html=True)
+        # ── Sıfırlama butonu ──────────────────────────────────────────────
+        if st.sidebar.button("🗑️ Tüm Filtreleri Sıfırla", key="sf_reset_all",
+                             use_container_width=True):
+            cls._reset(live)
+            st.rerun()
 
-        # ── Boyut sekmeleri ────────────────────────────────────────────────
-        if not live:
-            st.info("Filtrelenebilir boyut bulunamadı.")
-            return cfg
+        st.sidebar.markdown("---")
 
-        tabs = st.tabs([f"{e} {l}" for _,l,e,_ in live])
-        for tab, (col, label, emoji, key) in zip(tabs, live):
-            with tab:
-                try:
-                    cls._dim_tab(df, col, label, key, cfg)
-                except Exception as ex:
-                    st.warning(f"⚠️ {label}: {ex}")
+        # ── Kategorik boyutlar ────────────────────────────────────────────
+        for col, label, emoji, key in live:
+            all_opts = _opts(df[col])
+            total = len(all_opts)
 
-        # ── Sayısal filtreler ──────────────────────────────────────────────
-        st.markdown('<div class="pf-sep"></div>', unsafe_allow_html=True)
-        cls._numeric(df, cfg)
+            if total == 0:
+                continue
 
-        # ── Aktif filtre özeti ─────────────────────────────────────────────
-        cls._summary(cfg, live, df)
-        return cfg
+            with st.sidebar.expander(f"{emoji} **{label}** ({total})", expanded=False):
+                # Boyut içi arama
+                dim_search = st.text_input(
+                    f"{label} ara",
+                    value=st.session_state.get(f"{key}_q", ""),
+                    placeholder=f"{label} içinde ara…",
+                    key=f"{key}_q",
+                    label_visibility="collapsed",
+                )
 
-    # ── Boyut sekmesi ─────────────────────────────────────────────────────────
+                # Arama ile filtrele
+                q = dim_search.strip().lower()
+                visible = [o for o in all_opts if q in o.lower()] if q else all_opts
 
-    @classmethod
-    def _dim_tab(cls, df, col, label, key, cfg):
-        all_opts = _opts(df[col])
-        total    = len(all_opts)
-        if total == 0:
-            st.info(f"{label} için veri bulunamadı.")
-            return
+                # Hızlı seçim
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✓ Tümü", key=f"{key}_all", use_container_width=True):
+                        st.session_state[key] = visible[:]
+                        st.rerun()
+                with c2:
+                    if st.button("✗ Temizle", key=f"{key}_clr", use_container_width=True):
+                        st.session_state[key] = []
+                        st.rerun()
 
-        # Arama + checkbox satırı
-        sc1, sc2, sc3 = st.columns([4, 1, 1])
-        with sc1:
-            q = st.text_input(
-                f"_q_{key}_", key=f"{key}_q",
-                placeholder=f"{label} içinde ara… ({total} seçenek mevcut)",
-                label_visibility="collapsed",
-            )
-        with sc2:
-            chk_all = st.checkbox("✓ Tümü", key=f"{key}_ca")
-        with sc3:
-            chk_clr = st.checkbox("✗ Temizle", key=f"{key}_cc")
+                # Mevcut seçim
+                cur = _ss_list(key)
+                cur = [v for v in cur if v in all_opts]
 
-        # Aramayla filtrele
-        visible = (
-            [o for o in all_opts if q.strip().lower() in o.lower()]
-            if q.strip() else all_opts
-        )
+                # Multiselect
+                default = [v for v in cur if v in visible]
+                selected = st.multiselect(
+                    f"__{label} seç__",
+                    options=visible,
+                    default=default,
+                    key=f"{key}_ms",
+                    label_visibility="collapsed",
+                    placeholder=f"{len(visible)} seçenek…",
+                )
 
-        # Mevcut seçim — sadece geçerli değerler
-        cur = [v for v in _ss_list(key) if v in all_opts]
+                # Session'a kaydet
+                st.session_state[key] = selected
 
-        # Checkbox → state güncelle
-        if chk_all and not chk_clr:
-            cur = visible[:]
-            st.session_state[key] = cur
-        elif chk_clr:
-            cur = []
-            st.session_state[key] = cur
+                # Config'e ekle
+                if selected:
+                    cfg[col] = selected
 
-        # Multiselect — default yalnızca görünür ∩ mevcut seçim
-        default = [v for v in cur if v in visible]
-        selected = st.multiselect(
-            f"_ms_{label}_", options=visible, default=default,
-            key=f"{key}_ms", label_visibility="collapsed",
-            placeholder=f"Seçin veya yazın… ({len(visible)} seçenek görünüyor)",
-        )
-        st.session_state[key] = selected
-        if selected:
-            cfg[col] = selected
+                # Özet
+                n_sel = len(selected) if selected else len(visible)
+                st.caption(f"**{n_sel}** / {total} seçili")
 
-        # Özet satırı
-        oc1, oc2 = st.columns([3, 1])
-        with oc1:
-            st.markdown(_chips(selected, total), unsafe_allow_html=True)
-        with oc2:
-            n_sel = len(selected) if selected else total
-            st.markdown(
-                f'<div style="text-align:right;color:#4a6080;font-size:.73rem;padding-top:.25rem">'
-                f'<b style="color:#e8f0fe">{n_sel}</b>/{total}</div>',
-                unsafe_allow_html=True,
-            )
+        # ── Sayısal filtreler ─────────────────────────────────────────────
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**📊 Sayısal Aralıklar**")
 
-        # Dağılım önizleme
-        yrs = _detect_years(df, "Sales_")
-        if yrs:
-            lsc = f"Sales_{yrs[-1]}"
+        years = _detect_years(df, "Sales_")
+        if years:
+            lsc = f"Sales_{years[-1]}"
             if lsc in df.columns:
-                with st.expander(f"📊 Top 10 — {label} bazında satış", expanded=False):
-                    try:
-                        tmp = df[[col, lsc]].copy()
-                        tmp[col] = tmp[col].astype(str).str.strip()
-                        tmp[lsc] = pd.to_numeric(tmp[lsc], errors="coerce").fillna(0)
-                        top = tmp.groupby(col, sort=False)[lsc].sum().nlargest(10).reset_index()
-                        top.columns = [label, f"Satış {yrs[-1]}"]
-                        top[f"Satış {yrs[-1]}"] = top[f"Satış {yrs[-1]}"].apply(
-                            lambda v: f"${v/1e6:.2f}M" if v >= 1e6 else f"${v:,.0f}"
-                        )
-                        st.dataframe(top, use_container_width=True, hide_index=True)
-                    except Exception:
-                        pass
-
-    # ── Sayısal filtreler ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _numeric(df, cfg):
-        yrs         = _detect_years(df, "Sales_")
-        growth_cols = [c for c in df.columns if re.match(r"Growth_\d{4}_\d{4}", c)]
-        if not yrs and not growth_cols:
-            return
-
-        st.markdown(
-            '<div style="font-size:.67rem;font-weight:800;text-transform:uppercase;'
-            'letter-spacing:1.2px;color:#8ba3c7;margin-bottom:.5rem">📊 Sayısal Aralıklar</div>',
-            unsafe_allow_html=True,
-        )
-        nc1, nc2 = st.columns(2)
-
-        with nc1:
-            if yrs:
-                lsc = f"Sales_{yrs[-1]}"
-                if lsc in df.columns:
-                    try:
-                        vals = pd.to_numeric(df[lsc], errors="coerce").dropna()
-                        lo_a, hi_a = float(vals.min()), float(vals.max())
-                        if lo_a < hi_a:
-                            st.markdown(
-                                f'<div class="pf-dim-lbl">💰 Satış {yrs[-1]} (USD)</div>',
-                                unsafe_allow_html=True,
-                            )
-                            rng = st.slider(
-                                "_srng_", min_value=lo_a, max_value=hi_a,
-                                value=(lo_a, hi_a), key="pf_srng",
-                                label_visibility="collapsed", format="$%.0f",
-                            )
-                            if rng[0] > lo_a or rng[1] < hi_a:
-                                cfg["sales_range"] = (rng, lsc)
-                    except Exception:
-                        pass
-
-        with nc2:
-            if growth_cols:
-                gc = growth_cols[-1]
                 try:
-                    gv = pd.to_numeric(df[gc], errors="coerce").dropna()
-                    glo = float(max(gv.quantile(0.01), -500.0))
-                    ghi = float(min(gv.quantile(0.99),  500.0))
-                    glo, ghi = min(glo, -50.0), max(ghi, 50.0)
-                    if glo < ghi:
-                        st.markdown(
-                            '<div class="pf-dim-lbl">📈 Büyüme % Aralığı</div>',
-                            unsafe_allow_html=True,
-                        )
-                        grng = st.slider(
-                            "_grng_", min_value=glo, max_value=ghi,
-                            value=(glo, ghi), key="pf_grng",
-                            label_visibility="collapsed", format="%.1f%%",
-                        )
-                        if grng[0] > glo or grng[1] < ghi:
-                            cfg["growth_range"] = (grng, gc)
+                    vals = pd.to_numeric(df[lsc], errors="coerce").dropna()
+                    if len(vals) > 0:
+                        lo, hi = float(vals.min()), float(vals.max())
+                        if lo < hi:
+                            rng = st.sidebar.slider(
+                                f"💰 Satış {years[-1]}",
+                                min_value=lo, max_value=hi,
+                                value=(lo, hi),
+                                key="sf_sales_rng",
+                                format="$%.0f",
+                            )
+                            if rng[0] > lo or rng[1] < hi:
+                                cfg["sales_range"] = (rng, lsc)
                 except Exception:
                     pass
 
-        bc1, bc2 = st.columns(2)
-        with bc1:
-            if growth_cols and st.checkbox("📈 Sadece pozitif büyüme", key="pf_pos"):
+        growth_cols = [c for c in df.columns if re.match(r"Growth_\d{4}_\d{4}", c)]
+        if growth_cols:
+            gc = growth_cols[-1]
+            try:
+                gv = pd.to_numeric(df[gc], errors="coerce").dropna()
+                if len(gv) > 0:
+                    glo = float(max(gv.quantile(0.01), -500.0))
+                    ghi = float(min(gv.quantile(0.99), 500.0))
+                    glo = min(glo, -50.0)
+                    ghi = max(ghi, 50.0)
+                    if glo < ghi:
+                        grng = st.sidebar.slider(
+                            "📈 Büyüme %",
+                            min_value=glo, max_value=ghi,
+                            value=(glo, ghi),
+                            key="sf_growth_rng",
+                            format="%.1f%%",
+                        )
+                        if grng[0] > glo or grng[1] < ghi:
+                            cfg["growth_range"] = (grng, gc)
+            except Exception:
+                pass
+
+        # ── Ek filtreler ──────────────────────────────────────────────────
+        if growth_cols:
+            pos = st.sidebar.checkbox("📈 Sadece pozitif büyüme", key="sf_pos")
+            if pos:
                 cfg["positive_growth"] = growth_cols[-1]
-        with bc2:
-            if "International_Product" in df.columns:
-                intl = st.selectbox(
-                    "🌐 Ürün tipi", ["Tümü", "Sadece Uluslararası", "Sadece Yerel"],
-                    key="pf_intl", label_visibility="collapsed",
-                )
-                if intl != "Tümü":
-                    cfg["international"] = intl
 
-    # ── Özet ─────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _summary(cfg, live, df):
-        parts = []
-        if cfg.get("search"):
-            parts.append(f'🔎 "{cfg["search"]}"')
-        for col, label, emoji, _ in live:
-            if col in cfg and cfg[col]:
-                n = len(cfg[col]); tot = len(_opts(df[col]))
-                parts.append(f"{emoji} {label}: {n}/{tot}")
-        if "sales_range" in cfg:
-            (lo, hi), _ = cfg["sales_range"]
-            parts.append(f"💰 ${lo/1e6:.1f}M–${hi/1e6:.1f}M")
-        if "growth_range" in cfg:
-            (lo, hi), _ = cfg["growth_range"]
-            parts.append(f"📈 {lo:.0f}%–{hi:.0f}%")
-        if cfg.get("positive_growth"): parts.append("📈 Pozitif")
-        if cfg.get("international"):   parts.append(f"🌐 {cfg['international']}")
-
-        if not parts:
-            st.markdown(
-                '<div class="pf-active" style="color:#4a6080">'
-                'ℹ️ Aktif filtre yok — tüm veri gösteriliyor</div>',
-                unsafe_allow_html=True,
+        if "International_Product" in df.columns:
+            intl = st.sidebar.selectbox(
+                "🌐 Ürün Tipi",
+                ["Tümü", "Sadece Uluslararası", "Sadece Yerel"],
+                key="sf_intl",
             )
-        else:
-            tags = "".join(f'<span class="pf-tag">{p}</span>' for p in parts)
-            st.markdown(
-                f'<div class="pf-active"><b style="color:#e8f0fe">Aktif filtreler:</b> {tags}</div>',
-                unsafe_allow_html=True,
-            )
+            if intl != "Tümü":
+                cfg["international"] = intl
+
+        # ── Aktif filtre özeti ────────────────────────────────────────────
+        st.sidebar.markdown("---")
+        cls._render_summary(cfg, live, df)
+
+        return cfg
 
     # ── Apply ─────────────────────────────────────────────────────────────────
 
     @classmethod
     def apply(cls, df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
+        """Config'i uygular. Hata durumunda orijinal df döner."""
         if not cfg:
             return df
+
         try:
             mask = pd.Series(True, index=df.index)
 
+            # Global arama
             if cfg.get("search"):
-                term  = cfg["search"].lower()
+                term = cfg["search"].lower()
                 smask = pd.Series(False, index=df.index)
                 for c in df.select_dtypes(include="object").columns:
                     try:
@@ -368,6 +274,7 @@ class FilterPanel:
                         continue
                 mask &= smask
 
+            # Kategorik filtreler
             for col, _, _, _ in DIMS:
                 vals = cfg.get(col)
                 if not vals or col not in df.columns:
@@ -379,6 +286,7 @@ class FilterPanel:
                 except Exception:
                     continue
 
+            # Satış aralığı
             if "sales_range" in cfg:
                 try:
                     (lo, hi), c = cfg["sales_range"]
@@ -387,6 +295,7 @@ class FilterPanel:
                 except Exception:
                     pass
 
+            # Büyüme aralığı
             if "growth_range" in cfg:
                 try:
                     (lo, hi), c = cfg["growth_range"]
@@ -395,6 +304,7 @@ class FilterPanel:
                 except Exception:
                     pass
 
+            # Pozitif büyüme
             if "positive_growth" in cfg:
                 try:
                     c = cfg["positive_growth"]
@@ -403,6 +313,7 @@ class FilterPanel:
                 except Exception:
                     pass
 
+            # Uluslararası ürün
             if "international" in cfg and "International_Product" in df.columns:
                 try:
                     v = df["International_Product"].astype(str)
@@ -421,47 +332,78 @@ class FilterPanel:
             st.warning(f"⚠️ Filtre uygulanamadı: {exc}")
             return df
 
-    # ── Sıfırla ───────────────────────────────────────────────────────────────
+    # ── Yardımcı ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _reset(live):
-        keys = ["pf_search", "pf_srng", "pf_grng", "pf_pos", "pf_intl", "pf_rst"]
+    def _render_summary(cfg: Dict, live: List[Tuple], df: pd.DataFrame) -> None:
+        """Aktif filtrelerin özetini gösterir."""
+        parts = []
+        if cfg.get("search"):
+            parts.append(f'🔎 "{cfg["search"]}"')
+        for col, label, emoji, _ in live:
+            if col in cfg and cfg[col]:
+                n = len(cfg[col])
+                total = len(_opts(df[col]))
+                parts.append(f"{emoji} {label}: {n}/{total}")
+        if "sales_range" in cfg:
+            (lo, hi), _ = cfg["sales_range"]
+            parts.append(f"💰 ${lo/1e6:.1f}M–${hi/1e6:.1f}M")
+        if "growth_range" in cfg:
+            (lo, hi), _ = cfg["growth_range"]
+            parts.append(f"📈 {lo:.0f}%–{hi:.0f}%")
+        if cfg.get("positive_growth"):
+            parts.append("📈 Pozitif")
+        if cfg.get("international"):
+            parts.append(f"🌐 {cfg['international']}")
+
+        if not parts:
+            st.sidebar.info("ℹ️ Aktif filtre yok")
+        else:
+            st.sidebar.markdown("**Aktif Filtreler:**")
+            for p in parts:
+                st.sidebar.markdown(f"- {p}")
+
+    @staticmethod
+    def _reset(live: List[Tuple]) -> None:
+        """Tüm filtreleri sıfırlar."""
+        keys = [
+            "sf_search", "sf_sales_rng", "sf_growth_rng",
+            "sf_pos", "sf_intl", "sf_reset_all",
+        ]
         for _, _, _, k in live:
-            keys += [k, f"{k}_q", f"{k}_ms", f"{k}_ca", f"{k}_cc"]
+            keys += [k, f"{k}_q", f"{k}_ms", f"{k}_all", f"{k}_clr"]
         for k in keys:
             st.session_state.pop(k, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR ÖZET (hafif — widget yok)
+# ANA PANEL: Filtre sonuç özeti (main area'da)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_sidebar_summary(raw_df: pd.DataFrame, filtered_df: pd.DataFrame) -> None:
+def render_filter_status(raw_df: pd.DataFrame, filtered_df: pd.DataFrame) -> None:
+    """Ana içerikte filtre durumunu gösterir."""
     try:
-        total = len(raw_df); filt = len(filtered_df)
-        pct   = filt / total * 100 if total > 0 else 100
-        col   = "#ff4757" if pct < 10 else ("#ffb700" if pct < 50 else "#00e5a0")
-        st.sidebar.markdown(
-            f'<div style="background:rgba(13,31,60,.8);border:1px solid rgba(0,212,255,.15);'
-            f'border-radius:10px;padding:.75rem 1rem;margin-top:.5rem">'
-            f'<div style="color:#8ba3c7;font-size:.67rem;text-transform:uppercase;'
-            f'letter-spacing:1px;margin-bottom:.25rem">📊 Filtre Durumu</div>'
-            f'<div style="color:{col};font-size:1.3rem;font-weight:900">{filt:,}'
-            f'<span style="font-size:.78rem;color:#8ba3c7;font-weight:400"> satır</span></div>'
-            f'<div style="color:#4a6080;font-size:.7rem">{total:,} içinden '
-            f'<b style="color:{col}">{pct:.1f}%</b></div></div>',
-            unsafe_allow_html=True,
-        )
-        lines = []
-        for col_name, label, emoji, _ in DIMS:
-            if col_name in filtered_df.columns:
-                n = filtered_df[col_name].astype(str).nunique()
-                lines.append(f"{emoji} **{n:,}** {label}")
-        if lines:
-            st.sidebar.markdown("  \n".join(lines))
+        total = len(raw_df)
+        filt = len(filtered_df)
+        pct = filt / total * 100 if total > 0 else 100
+
+        if filt < total:
+            color = "#ff4757" if pct < 10 else ("#ffb700" if pct < 50 else "#00e5a0")
+            st.markdown(
+                f'<div style="background:rgba(255,183,0,0.08);border:1px solid rgba(255,183,0,0.25);'
+                f'border-radius:8px;padding:.5rem 1rem;margin-bottom:.6rem;font-size:.85rem">'
+                f'<span style="color:{color};font-weight:900">{filt:,}</span> '
+                f'<span style="color:#8ba3c7">satır gösteriliyor</span> '
+                f'<span style="color:#4a6080">({total:,} toplam · '
+                f'<b style="color:{color}">{pct:.1f}%</b>)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
     except Exception:
         pass
 
 
-# Geriye dönük uyumluluk takma adı
-ProfessionalFilterSystem = FilterPanel
+# Geriye dönük uyumluluk
+FilterPanel = SidebarFilterSystem
+ProfessionalFilterSystem = SidebarFilterSystem
+render_sidebar_summary = render_filter_status
